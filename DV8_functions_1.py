@@ -7,7 +7,13 @@ from scipy.stats import gaussian_kde
 import matplotlib.patches as mpatches
 from matplotlib.colors import ListedColormap, BoundaryNorm
 import dask.array as da
+import geopandas as gpd
+from pathlib import Path
+from getpass import getuser
 
+
+
+# PREVIOUS MASK
 def create_old_oceanic_regions_mask(lats, lons):
     """
     OLD VERSION - Create non-overlapping masks for oceanic regions based on specified coordinates
@@ -90,208 +96,362 @@ def create_old_oceanic_regions_mask(lats, lons):
     
     return masks
 
-
-def create_oceanic_regions_mask(lats, lons):
+# MASK THAT USES SHAPEFILE COAST BOUNDARIES
+def create_shapefile_oceanic_regions_mask(lats, lons, example_sst=None, shapefile_path=None, mask_file=None):
     """
-    NEW VERSION - Create non-overlapping masks for 14 oceanic regions with proper land boundaries
-    Parameters:
-    - lats: latitude array (1D or 2D)
-    - lons: longitude array (1D or 2D)
-    
-    Returns:
-    - masks: dictionary of boolean masks for each of the 14 regions
+    Create oceanic regions mask using shapefile-based approach
     """
-    # Create coordinate grids if not already 2D
+    # Create example_sst from lats and lons
     if lats.ndim == 1:
         lon_grid, lat_grid = np.meshgrid(lons, lats)
     else:
         lat_grid, lon_grid = lats, lons
     
-    # Initialize all masks as False
-    masks = {
-        # Southern Ocean (1 region)
-        'southern_ocean': np.zeros_like(lon_grid, dtype=bool),
+    if example_sst == None:
+        example_sst= xr.open_dataset('/home/b/b382616/scratch/mhws/DV8/example_sst.nc')
+        example_sst=example_sst.dat_anomaly
+    # Default path to shapefile if not provided
+    if shapefile_path is None:
+        shapefile_path = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'DV8' / 'goas_v01.shp'
+    
+    if mask_file is None:
+        save_path = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'DV8'
+        save_path.mkdir(parents=True, exist_ok=True)
+        mask_file = save_path / "region_masks.zarr"
+    
+    # Check if masks already exist
+    if mask_file.exists():
+        print("Loading existing masks...")
+        region_masks_ds = xr.open_zarr(str(mask_file))
+        region_masks = {var: region_masks_ds[var] for var in region_masks_ds.data_vars}
+        return region_masks
+    
+    print("Creating masks from shapefile...")
+    region_masks = {}
+
+    # Prepare example SST
+    example_sst = example_sst.rio.write_crs("EPSG:4326")
+
+    # Load shapefile
+    oceans = gpd.read_file(shapefile_path).to_crs("EPSG:4326")
+
+    # ----- Southern Ocean -----
+    southern_oceans = oceans[oceans["name"].str.contains("South") | (oceans["name"]=="Indian Ocean")]
+    mask_southern = example_sst.rio.clip(southern_oceans.geometry, southern_oceans.crs, drop=False)
+    mask_southern_bool = ~xr.ufuncs.isnan(mask_southern)
+    region_masks["Southern_Ocean"] = mask_southern_bool & (mask_southern_bool.lat <= -40)
+
+    # ----- Mid/High latitude masks -----
+    lat_bands = {
+        "MidSouth": (-40, -10), #South_SubTropics
+        "MidNorth": (10, 30),
+        "Northern": (30, 70)
+    }
+
+    oceans_to_mask = ["North Pacific Ocean", "South Pacific Ocean",
+                      "North Atlantic Ocean", "South Atlantic Ocean",
+                      "Indian Ocean"]
+
+    for ocean in oceans_to_mask:
+        ocean_gdf = oceans[oceans["name"] == ocean]
+        if ocean_gdf.empty:
+            continue
+        mask_da = example_sst.rio.clip(ocean_gdf.geometry, ocean_gdf.crs, drop=False)
+        mask_bool = ~xr.ufuncs.isnan(mask_da)
+
+        for band_name, (lat_min, lat_max) in lat_bands.items():
+            # Skip bands not relevant for this ocean
+            if ocean == "Indian Ocean" and band_name == "Northern":
+                continue
+            if band_name == "Northern" and not (ocean.startswith("North") or ocean=="Indian Ocean"):
+                continue
+            if band_name == "MidSouth" and not (ocean.startswith("South") or ocean=="Indian Ocean"):
+                continue
+            if band_name == "MidNorth" and ocean.startswith("South"):
+                continue  # remove South MidNorth masks
+
+            region_masks[f"{ocean}_{band_name}"] = mask_bool & (mask_bool.lat >= lat_min) & (mask_bool.lat <= lat_max)
+
+    # ----- Equatorial masks -----
+    equatorial_oceans = ["Pacific", "Atlantic", "Indian"]
+    equatorial_lat = (-10, 10)
+
+    for eq_ocean_name in equatorial_oceans:
+        gdf = oceans[oceans["name"].str.contains(eq_ocean_name)]
+        if gdf.empty:
+            continue
+        mask_da = example_sst.rio.clip(gdf.geometry, gdf.crs, drop=False)
+        mask_bool = ~xr.ufuncs.isnan(mask_da)
+        region_masks[f"{eq_ocean_name}_Equatorial"] = mask_bool & (mask_bool.lat >= equatorial_lat[0]) & (mask_bool.lat <= equatorial_lat[1])
+
+    # ----- Small seas -----
+    small_seas = {
+        "Mediterranean_Sea": "Mediterranean Region",
+        "Baltic_Sea": "Baltic Sea",
+        "South_China_Eastern_Archipelagic_Seas": "South China and Easter Archipelagic Seas"
+    }
+
+    for key, name in small_seas.items():
+        gdf = oceans[oceans["name"] == name]
+        if gdf.empty:
+            continue
+        mask_da = example_sst.rio.clip(gdf.geometry, gdf.crs, drop=False)
+        mask_bool = ~xr.ufuncs.isnan(mask_da)
+        region_masks[key] = mask_bool
+
+    # ----- MODIFICATIONS -----
+    print("Applying region modifications...")
+    
+    # 1. Pacific Equatorial modification (combine Pacific, South China equatorial, and part of Indian)
+    if ('Pacific_Equatorial' in region_masks and 
+        'South_China_Eastern_Archipelagic_Seas' in region_masks and 
+        'Indian_Equatorial' in region_masks):
         
-        # Mid-latitudes South (3 regions)
-        'mid_lat_south_pacific': np.zeros_like(lon_grid, dtype=bool),
-        'mid_lat_south_atlantic': np.zeros_like(lon_grid, dtype=bool),
-        'mid_lat_south_indian': np.zeros_like(lon_grid, dtype=bool),
+        pacific = region_masks['Pacific_Equatorial']
+        south_china = region_masks['South_China_Eastern_Archipelagic_Seas']
+        indian = region_masks['Indian_Equatorial']
+
+        # 1️⃣ Restrict Pacific & South China masks to -10 <= lat <= 10
+        lat_mask = (pacific.lat >= -10) & (pacific.lat <= 10)
+        pacific_eq = pacific.where(lat_mask, False)
+        south_china_eq = south_china.where(lat_mask, False)
+
+        # 2️⃣ Restrict Indian mask to 120 <= lon <= 142
+        lon_mask = (indian.lon >= 120) & (indian.lon <= 142)
+        indian_eq = indian.where(lon_mask, False)
+
+        # 3️⃣ Combine all the masks into one
+        combined_mask = pacific_eq | south_china_eq | indian_eq
         
-        # Equatorial (3 regions)
-        'equatorial_pacific': np.zeros_like(lon_grid, dtype=bool),
-        'equatorial_atlantic': np.zeros_like(lon_grid, dtype=bool),
-        'equatorial_indian': np.zeros_like(lon_grid, dtype=bool),
+        # 4️⃣ Remove the Indian equatorial points from 120-142°E and assign to Pacific
+        region_masks['Pacific_Equatorial'] = combined_mask
+        region_masks['Indian_Equatorial'] = indian.where(~lon_mask, False)
+
+    # 2. North Pacific Subtropics modification (combine North Pacific and South China subtropical parts)
+    if ('North Pacific Ocean_MidNorth' in region_masks and 
+        'South_China_Eastern_Archipelagic_Seas' in region_masks):
         
-        # Mid-latitudes North (3 regions)
-        'mid_lat_north_pacific': np.zeros_like(lon_grid, dtype=bool),
-        'mid_lat_north_atlantic': np.zeros_like(lon_grid, dtype=bool),
-        'mid_lat_north_indian': np.zeros_like(lon_grid, dtype=bool),
-        
-        # Northern Latitudes (2 regions - no Indian)
-        'northern_lat_pacific': np.zeros_like(lon_grid, dtype=bool),
-        'northern_lat_atlantic': np.zeros_like(lon_grid, dtype=bool),
-        
-        # Additional regions (2 regions)
-        'mediterranean_sea': np.zeros_like(lon_grid, dtype=bool),
-        'baltic_sea': np.zeros_like(lon_grid, dtype=bool)
+        north_pacific = region_masks['North Pacific Ocean_MidNorth']
+        south_china = region_masks['South_China_Eastern_Archipelagic_Seas']
+
+        # Define latitude range mask
+        lat_mask = (north_pacific.lat >= 10) & (north_pacific.lat <= 30)
+
+        # Apply the lat restriction
+        north_pacific_band = north_pacific.where(lat_mask, False)
+        south_china_band = south_china.where(lat_mask, False)
+
+        # Combine (logical OR)
+        region_masks['North Pacific Ocean_MidNorth'] = north_pacific_band | south_china_band
+
+    # 3. Indian South Subtropics modification (add specific box)
+    if 'Indian Ocean_MidSouth' in region_masks:
+        indian_mid_south = region_masks['Indian Ocean_MidSouth']
+
+        # Define the lat/lon box
+        lat_mask = (indian_mid_south.lat >= -11) & (indian_mid_south.lat <= -10)
+        lon_mask = (indian_mid_south.lon >= 105) & (indian_mid_south.lon <= 130)
+
+        # Make a new boolean array for the box
+        box_mask = lat_mask & lon_mask
+
+        # Expand the original mask to include the box
+        region_masks['Indian Ocean_MidSouth'] = indian_mid_south | box_mask
+
+    # 4. Remove Baltic Sea and South China Sea as separate regions
+    regions_to_remove = ['Baltic_Sea', 'South_China_Eastern_Archipelagic_Seas']
+    for region in regions_to_remove:
+        if region in region_masks:
+            del region_masks[region]
+            print(f"Removed {region} from regions")
+
+    # Mapping old mask names to new names
+    rename_map = {
+        "Indian Ocean_MidNorth": "Indian_NorthSubTropics",
+        "Indian Ocean_MidSouth": "Indian_SouthSubTropics",
+        "North Atlantic Ocean_MidNorth": "North_Atlantic_SubTropics",
+        "North Atlantic Ocean_Northern": "North_Atlantic_MiddleLats",
+        "North Pacific Ocean_MidNorth": "North_Pacific_SubTropics",
+        "North Pacific Ocean_Northern": "North_Pacific_MiddleLats",
+        "South Atlantic Ocean_MidSouth": "South_Atlantic_SubTropics",
+        "South Pacific Ocean_MidSouth": "South_Pacific_SubTropics"
+        # All others remain the same
     }
     
-    # Define ocean basin boundaries with land-based borders
-    
-    # 1. Mediterranean Sea - carefully bounded to avoid Atlantic spillage
-    # Strait of Gibraltar at ~-5.5°W, Mediterranean extends to ~40°E
-    mediterranean_lat = (lat_grid >= 30) & (lat_grid <= 45)
-    mediterranean_lon = (lon_grid >= -5.5) & (lon_grid <= 40)
-    
-    # Refine Mediterranean to exclude Atlantic approaches
-    # Exclude areas west of Gibraltar that might be considered Atlantic
-    masks['mediterranean_sea'] = mediterranean_lat & mediterranean_lon
-    
-    # 2. Baltic Sea
-    baltic_lat = (lat_grid >= 54) & (lat_grid <= 66)
-    baltic_lon = (lon_grid >= 10) & (lon_grid <= 30)
-    masks['baltic_sea'] = baltic_lat & baltic_lon
-    
-    # Pacific Ocean boundaries:
-    # Western border: Longitude of Tasmania (~147°E) for Mid Lat South Pacific
-    # Eastern border: -116° for Northern Pacific, -80° for others
-    pacific_mask_general = (
-        ((lon_grid >= 147) & (lon_grid <= 180)) |  # Western Pacific
-        ((lon_grid >= -180) & (lon_grid <= -80))   # Eastern Pacific (general)
-    )
-    
-    # Northern Pacific has different eastern border
-    pacific_mask_northern = (
-        ((lon_grid >= 147) & (lon_grid <= 180)) |  # Western Pacific  
-        ((lon_grid >= -180) & (lon_grid <= -116))  # Eastern Pacific (northern)
-    )
-    
-    # Atlantic Ocean boundaries with specific longitudes:
-    # Equatorial Atlantic: -74°W to 20°E
-    atlantic_equatorial = (lon_grid >= -74) & (lon_grid <= 20)
-    
-    # Mid Lat South Atlantic: -69°W to 20°E  
-    atlantic_mid_south = (lon_grid >= -69) & (lon_grid <= 20)
-    
-    # Mid Lat North Atlantic: complex shape due to Gulf of Mexico
-    # Use wider bounds but we'll refine with latitude-dependent boundaries
-    atlantic_mid_north_general = (lon_grid >= -98) & (lon_grid <= 20)
-    
-    # Northern Atlantic: similar to mid north but exclude Mediterranean/Baltic
-    atlantic_northern = (lon_grid >= -60) & (lon_grid <= 20)
-    
-    # Indian Ocean boundaries:
-    indian_mask = (lon_grid >= 20) & (lon_grid <= 147)
-    
-    # 1. SOUTHERN OCEAN (-90 to -40, all longitudes)
-    masks['southern_ocean'] = (lat_grid >= -90) & (lat_grid <= -40)
-    
-    # 2. MID-LATITUDES SOUTH (-40 to -10)
-    lat_south = (lat_grid > -40) & (lat_grid <= -10)
-    masks['mid_lat_south_pacific'] = lat_south & pacific_mask_general
-    masks['mid_lat_south_atlantic'] = lat_south & atlantic_mid_south
-    masks['mid_lat_south_indian'] = lat_south & indian_mask
-    
-    # 3. EQUATORIAL (-10 to +10)
-    lat_equatorial = (lat_grid > -10) & (lat_grid <= 10)
-    masks['equatorial_pacific'] = lat_equatorial & pacific_mask_general
-    masks['equatorial_atlantic'] = lat_equatorial & atlantic_equatorial
-    masks['equatorial_indian'] = lat_equatorial & indian_mask
-    
-    # 4. MID-LATITUDES NORTH (+10 to +30)
-    lat_mid_north = (lat_grid > 10) & (lat_grid <= 30)
-    
-    # For Mid Lat North Atlantic, use complex boundaries to handle Gulf of Mexico
-    # Start with general bounds, then refine
-    mid_north_atlantic_general = lat_mid_north & atlantic_mid_north_general
-    
-    # Refine Gulf of Mexico area - exclude Pacific side
-    # In the Gulf region (approx 18N-30N, -98W to -81W), ensure we're on Atlantic side
-    gulf_mask = (
-        (lat_grid >= 18) & (lat_grid <= 30) & 
-        (lon_grid >= -98) & (lon_grid <= -81)
-    )
-    
-    # Only include Gulf area if it's clearly Atlantic (east of -90W in northern part)
-    gulf_atlantic = gulf_mask & (lon_grid >= -90)
-    
-    # Combine general Atlantic with refined Gulf area
-    masks['mid_lat_north_atlantic'] = (
-        (mid_north_atlantic_general & ~gulf_mask) |  # Non-Gulf Atlantic
-        gulf_atlantic  # Gulf of Mexico (Atlantic side)
-    )
-    
-    masks['mid_lat_north_pacific'] = lat_mid_north & pacific_mask_general
-    masks['mid_lat_north_indian'] = lat_mid_north & indian_mask
-    
-    # 5. NORTHERN LATITUDES (+30 to +70) - NO INDIAN OCEAN
-    lat_north = (lat_grid > 30) & (lat_grid <= 70)
-    masks['northern_lat_pacific'] = lat_north & pacific_mask_northern
-    masks['northern_lat_atlantic'] = lat_north & atlantic_northern
-    
-    # Exclude Mediterranean and Baltic from Atlantic regions
-    atlantic_regions = ['mid_lat_south_atlantic', 'equatorial_atlantic', 
-                       'mid_lat_north_atlantic', 'northern_lat_atlantic']
-    
-    for region in atlantic_regions:
-        masks[region] = masks[region] & ~masks['mediterranean_sea'] & ~masks['baltic_sea']
-    
-    # Ensure no overlaps
-    used_mask = np.zeros_like(lon_grid, dtype=bool)
-    
-    # Process in priority order
-    priority_order = [
-        'southern_ocean',
-        'mid_lat_south_pacific', 'mid_lat_south_atlantic', 'mid_lat_south_indian',
-        'equatorial_pacific', 'equatorial_atlantic', 'equatorial_indian',
-        'mid_lat_north_pacific', 'mid_lat_north_atlantic', 'mid_lat_north_indian',
-        'northern_lat_pacific', 'northern_lat_atlantic',
-        'mediterranean_sea', 'baltic_sea'
-    ]
-    
-    for region in priority_order:
-        masks[region] = masks[region] & ~used_mask
-        used_mask = used_mask | masks[region]
-    
-    return masks
+    # Apply renaming
+    region_masks = {rename_map.get(k, k): v for k, v in region_masks.items()}
 
-# Update the color mapping for 14 regions
-def get_region_colors_14():
+    # ----- NEW: Ensure masks are mutually exclusive -----
+    region_masks = ensure_mutually_exclusive_masks(region_masks)
+
+    # ----- Save masks to Zarr -----
+    region_masks_ds = xr.Dataset(region_masks)
+    region_masks_ds.to_zarr(str(mask_file))
+    print(f"Masks saved to {mask_file}")
+
+    return region_masks
+
+
+
+
+def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
     """
-    Get color mapping for the 14 regions
+    Ensure that no latitude/longitude point belongs to more than one mask.
+    Uses a priority system to resolve conflicts.
+    
+    Parameters:
+    - region_masks: dictionary of region masks
+    - priority_order: list of region names in priority order (first has highest priority)
+    
+    Returns:
+    - unique_masks: dictionary of mutually exclusive region masks
+    """
+    print("Ensuring masks are mutually exclusive...")
+    
+    if priority_order is None:
+        # Define default priority order (you can modify this)
+        priority_order = [
+            'Southern_Ocean',           # Highest priority
+            'Pacific_Equatorial',       # Next priority
+            'Atlantic_Equatorial',
+            'Indian_Equatorial',
+            'North_Pacific_SubTropics',
+            'North_Pacific_MiddleLats',
+            'South_Pacific_SubTropics',
+            'North_Atlantic_SubTropics',
+            'North_Atlantic_MiddleLats',
+            'South_Atlantic_SubTropics',
+            'Indian_NorthSubTropics',
+            'Indian_SouthSubTropics',
+            'Mediterranean_Sea'         # Lowest priority
+        ]
+    
+    # Convert all masks to numpy arrays for easier manipulation
+    bool_masks = {}
+    for region_name, mask in region_masks.items():
+        bool_masks[region_name] = mask.values if hasattr(mask, 'values') else mask
+    
+    # Create a copy to modify
+    unique_masks = bool_masks.copy()
+    
+    # Track conflicts
+    total_conflicts = 0
+    
+    # Process regions in priority order
+    for i, high_priority_region in enumerate(priority_order):
+        if high_priority_region not in unique_masks:
+            continue
+            
+        for j, low_priority_region in enumerate(priority_order[i+1:], i+1):
+            if low_priority_region not in unique_masks:
+                continue
+                
+            # Find overlapping points
+            overlap = unique_masks[high_priority_region] & unique_masks[low_priority_region]
+            conflict_count = np.sum(overlap)
+            
+            if conflict_count > 0:
+                total_conflicts += conflict_count
+                print(f"  Resolving {conflict_count} conflicts: {high_priority_region} over {low_priority_region}")
+                
+                # Remove overlapping points from lower priority region
+                unique_masks[low_priority_region] = unique_masks[low_priority_region] & ~overlap
+    
+    print(f"Total conflicts resolved: {total_conflicts}")
+    
+    # Convert back to xarray DataArrays
+    result_masks = {}
+    for region_name, bool_mask in unique_masks.items():
+        result_masks[region_name] = xr.DataArray(
+            bool_mask,
+            dims=('lat', 'lon'),
+            coords={
+                'lat': region_masks[region_name].lat if hasattr(region_masks[region_name], 'lat') else region_masks[region_name].coords['lat'],
+                'lon': region_masks[region_name].lon if hasattr(region_masks[region_name], 'lon') else region_masks[region_name].coords['lon']
+            },
+            name=region_name
+        )
+    
+    # Verify no overlaps remain
+    verify_no_overlaps(result_masks)
+    
+    return result_masks
+
+
+
+def verify_no_overlaps(region_masks):
+    """
+    Verify that no overlaps exist between masks by double checking the ensure_mutually_exclusive_masks function
+    """
+    print("Verifying no overlaps between masks...")
+    
+    regions = list(region_masks.keys())
+    total_overlaps = 0
+    
+    for i in range(len(regions)):
+        region1 = regions[i]
+        mask1 = region_masks[region1].values if hasattr(region_masks[region1], 'values') else region_masks[region1]
+        
+        for j in range(i+1, len(regions)):
+            region2 = regions[j]
+            mask2 = region_masks[region2].values if hasattr(region_masks[region2], 'values') else region_masks[region2]
+            
+            overlap = mask1 & mask2
+            overlap_count = np.sum(overlap)
+            
+            if overlap_count > 0:
+                total_overlaps += overlap_count
+                print(f"  ❌ OVERLAP FOUND: {region1} and {region2} share {overlap_count} points")
+    
+    if total_overlaps == 0:
+        print("  ✅ SUCCESS: No overlaps found between any masks")
+    else:
+        print(f"  ⚠️  WARNING: {total_overlaps} overlapping points remain")
+    
+    return total_overlaps == 0
+
+
+
+
+
+
+def get_region_colors_shapefile():
+    """
+    Get color mapping for shapefile-based regions with updated names
+    MODIFIED: Remove Baltic Sea and South China Sea colors
     """
     return {
         # Southern Ocean
-        'southern_ocean': 'purple',
+        'Southern_Ocean': 'purple',
         
-        # Mid-latitudes South
-        'mid_lat_south_pacific': 'lightblue',
-        'mid_lat_south_atlantic': 'blue',
-        'mid_lat_south_indian': 'darkblue',
+        # Pacific Ocean regions
+        'North_Pacific_SubTropics': 'lightblue',
+        'North_Pacific_MiddleLats': 'blue',
+        'South_Pacific_SubTropics': 'darkblue',
+        'Pacific_Equatorial': 'lightgreen',
         
-        # Equatorial
-        'equatorial_pacific': 'lightgreen',
-        'equatorial_atlantic': 'green',
-        'equatorial_indian': 'darkgreen',
+        # Atlantic Ocean regions
+        'North_Atlantic_SubTropics': 'yellow',
+        'North_Atlantic_MiddleLats': 'orange',
+        'South_Atlantic_SubTropics': 'red',
+        'Atlantic_Equatorial': 'green',
         
-        # Mid-latitudes North
-        'mid_lat_north_pacific': 'yellow',
-        'mid_lat_north_atlantic': 'orange',
-        'mid_lat_north_indian': 'red',
+        # Indian Ocean regions
+        'Indian_SouthSubTropics': 'pink',
+        'Indian_NorthSubTropics': 'magenta',
+        'Indian_Equatorial': 'darkgreen',
         
-        # Northern Latitudes (no Indian)
-        'northern_lat_pacific': 'pink',
-        'northern_lat_atlantic': 'magenta',
-        
-        # Additional regions
-        'mediterranean_sea': 'cyan',
-        'baltic_sea': 'teal'
+        # Small seas (only Mediterranean remains)
+        'Mediterranean_Sea': 'cyan'
+        # REMOVED: 'Baltic_Sea': 'teal',
+        # REMOVED: 'South_China_Eastern_Archipelagic_Seas': 'brown'
     }
 
-# Update the plot function to handle 14 regions
+
 def plot_region_masks(lats, lons, masks, title="Oceanic Regions Mask"):
     """
-    Plot region masks - automatically handles different region counts
+    Plot region masks using the renamed shapefile-based regions.
+    UPDATED: Remove colors for deleted regions (Baltic Sea, South China Sea)
     """
     # Create coordinate grids if not already 2D
     if lats.ndim == 1:
@@ -299,95 +459,63 @@ def plot_region_masks(lats, lons, masks, title="Oceanic Regions Mask"):
     else:
         lat_grid, lon_grid = lats, lons
 
-    # Auto-detect which mask type we're using and set colors accordingly
-    if 'mediterranean_sea' in masks and 'baltic_sea' in masks:
-        colors = get_region_colors_14()
-        print("Using 14-region mask colors")
-    elif 'equatorial_pacific' in masks:
-        if 'northern_lat_indian' in masks:
-            colors = {
-                # Southern Ocean
-                'southern_ocean': 'purple',
-                
-                # Mid-latitudes South
-                'mid_lat_south_pacific': 'lightblue',
-                'mid_lat_south_atlantic': 'blue', 
-                'mid_lat_south_indian': 'darkblue',
-                
-                # Equatorial
-                'equatorial_pacific': 'lightgreen',
-                'equatorial_atlantic': 'green',
-                'equatorial_indian': 'darkgreen',
-                
-                # Mid-latitudes North  
-                'mid_lat_north_pacific': 'yellow',
-                'mid_lat_north_atlantic': 'orange',
-                'mid_lat_north_indian': 'red',
-                
-                # Northern Latitudes
-                'northern_lat_pacific': 'pink',
-                'northern_lat_atlantic': 'magenta',
-                'northern_lat_indian': 'brown'
-            }
-            print("Using 13-region mask colors")
-        else:
-            colors = {
-                # Southern Ocean
-                'southern_ocean': 'purple',
-                
-                # Mid-latitudes South
-                'mid_lat_south_pacific': 'lightblue',
-                'mid_lat_south_atlantic': 'blue', 
-                'mid_lat_south_indian': 'darkblue',
-                
-                # Equatorial
-                'equatorial_pacific': 'lightgreen',
-                'equatorial_atlantic': 'green',
-                'equatorial_indian': 'darkgreen',
-                
-                # Mid-latitudes North  
-                'mid_lat_north_pacific': 'yellow',
-                'mid_lat_north_atlantic': 'orange',
-                'mid_lat_north_indian': 'red',
-                
-                # Northern Latitudes (no Indian)
-                'northern_lat_pacific': 'pink',
-                'northern_lat_atlantic': 'magenta'
-            }
-            print("Using 12-region mask colors")
-    else:
-        # Old 5-region mask
-        colors = {
-            'eastern_boundary': 'red',
-            'western_boundary': 'blue', 
-            'equatorial': 'green',
-            'southern_ocean': 'purple',
-            'north_atlantic': 'orange'
-        }
-        print("Using old 5-region mask colors")
-    
+    # Use the updated color mapping (without Baltic Sea and South China Sea)
+    colors = {
+        # Southern Ocean
+        'Southern_Ocean': 'purple',
+        
+        # Pacific Ocean regions
+        'North_Pacific_SubTropics': 'lightblue',
+        'North_Pacific_MiddleLats': 'blue',
+        'South_Pacific_SubTropics': 'darkblue',
+        'Pacific_Equatorial': 'lightgreen',
+        
+        # Atlantic Ocean regions
+        'North_Atlantic_SubTropics': 'yellow',
+        'North_Atlantic_MiddleLats': 'orange',
+        'South_Atlantic_SubTropics': 'red',
+        'Atlantic_Equatorial': 'green',
+        
+        # Indian Ocean regions
+        'Indian_SouthSubTropics': 'pink',
+        'Indian_NorthSubTropics': 'magenta',
+        'Indian_Equatorial': 'darkgreen',
+        
+        # Small seas (only Mediterranean remains)
+        'Mediterranean_Sea': 'cyan'
+        # REMOVED: 'Baltic_Sea': 'teal',
+        # REMOVED: 'South_China_Eastern_Archipelagic_Seas': 'brown'
+    }
+    print("Using updated shapefile-based region colors (Baltic Sea removed, South China Sea split)")
+
     fig = plt.figure(figsize=(15, 8))
     ax = plt.axes(projection=ccrs.PlateCarree())
     ax.gridlines(draw_labels=True, linestyle='--', alpha=0.7)
 
     for region, mask in masks.items():
-        if region in colors:  # Only plot regions that have colors defined
-            masked_data = np.where(mask, 1, np.nan)
-            ax.pcolormesh(lon_grid, lat_grid, masked_data,
-                          cmap=ListedColormap([colors[region]]),
-                          alpha=1,
-                          transform=ccrs.PlateCarree(),
-                          shading='auto')
+        if region in colors:
+            mask_data = mask.values if hasattr(mask, 'values') else mask
+            # Only plot where mask is True
+            masked_lat = lat_grid[mask_data]
+            masked_lon = lon_grid[mask_data]
+            ax.scatter(masked_lon, masked_lat, color=colors[region], s=1, transform=ccrs.PlateCarree())
+
 
     ax.coastlines(zorder=8)
     ax.add_feature(cfeature.LAND, facecolor='lightgrey', zorder=10)
     ax.set_global()
 
     # Legend
-    legend_patches = [mpatches.Patch(color=color, label=r.replace('_',' ').title())
-                      for r, color in colors.items()]
-    ax.legend(handles=legend_patches, loc='lower center', bbox_to_anchor=(0.5, -0.15), 
-              ncol=4)
+    legend_patches = [
+        mpatches.Patch(color=color, label=r.replace('_',' ').title())
+        for r, color in colors.items()
+    ]
+    ax.legend(
+        handles=legend_patches,
+        loc='lower center',
+        bbox_to_anchor=(0.5, -0.15),
+        ncol=4
+    )
     
     plt.title(title, fontsize=16, pad=20)
     plt.tight_layout()
@@ -395,7 +523,15 @@ def plot_region_masks(lats, lons, masks, title="Oceanic Regions Mask"):
 
 
 
-
+def plot_shapefile_regions(lats, lons, shapefile_path=None, title="Shapefile Oceanic Regions"):
+    """
+    Plot the shapefile-based regions directly
+    """
+    # Create masks using shapefile method
+    masks = create_shapefile_oceanic_regions_mask(lats, lons, shapefile_path)
+    
+    # Plot using the general plotting function
+    return plot_region_masks(lats, lons, masks, title)
 
 def extract_region_data(data_array, lats, lons, masks, time_idx=None):
     """
@@ -414,18 +550,29 @@ def extract_region_data(data_array, lats, lons, masks, time_idx=None):
     region_data = {}
     
     for region, mask in masks.items():
+        # Handle both numpy arrays and xarray DataArrays
+        if hasattr(mask, 'values'):
+            mask_data = mask.values
+        else:
+            mask_data = mask
+            
         if data_array.ndim == 3:  # Multiple time steps (time, lat, lon)
             if time_idx is not None:
                 # Extract data for specific time
-                region_data[region] = data_array[time_idx, mask]
+                region_data[region] = data_array[time_idx, mask_data]
             else:
                 # Extract all data across time and space
                 # Reshape to (time * spatial_points)
-                region_data[region] = data_array[:, mask].flatten()
+                region_data[region] = data_array[:, mask_data].flatten()
         else:  # Single time step (lat, lon)
-            region_data[region] = data_array[mask]
+            region_data[region] = data_array[mask_data]
     
     return region_data
+
+
+#PDFs ============================================================================================================
+
+
 
 def compute_pdfs(region_data, bins=50, density=True):
     """
@@ -2063,7 +2210,7 @@ def analyze_regional_extreme_thresholds(models_dict, regions=None, percentiles=[
             try:
                 if data_array.ndim == 3:
                     # For 3D data, compute temporal mean first
-                    regional_data = data_array.where(mask).mean(dim='time', skipna=True)
+                    regional_data = data_array.where(mask)#.mean(dim='time', skipna=True)
                 else:
                     regional_data = data_array.where(mask)
                 
