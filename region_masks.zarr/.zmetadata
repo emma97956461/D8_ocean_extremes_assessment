@@ -1,0 +1,450 @@
+{
+    "metadata": {
+        ".zattrs": {},
+        ".zgroup": {
+            "zarr_format": 2
+        },
+        "Atlantic_Equatorial/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "Atlantic_Equatorial/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "Indian_Equatorial/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "Indian_Equatorial/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "Indian_NorthSubTropics/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "Indian_NorthSubTropics/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "Indian_SouthSubTropics/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "Indian_SouthSubTropics/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "Mediterranean_Sea/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "Mediterranean_Sea/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "North_Atlantic_MiddleLats/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "North_Atlantic_MiddleLats/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "North_Atlantic_SubTropics/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "North_Atlantic_SubTropics/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "North_Pacific_MiddleLats/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "North_Pacific_MiddleLats/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "North_Pacific_SubTropics/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "North_Pacific_SubTropics/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "Pacific_Equatorial/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "Pacific_Equatorial/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "South_Atlantic_SubTropics/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "South_Atlantic_SubTropics/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "South_Pacific_SubTropics/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "South_Pacific_SubTropics/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "Southern_Ocean/.zarray": {
+            "chunks": [
+                360,
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "|i1",
+            "fill_value": null,
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720,
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "Southern_Ocean/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat",
+                "lon"
+            ],
+            "dtype": "bool"
+        },
+        "lat/.zarray": {
+            "chunks": [
+                720
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": "NaN",
+            "filters": null,
+            "order": "C",
+            "shape": [
+                720
+            ],
+            "zarr_format": 2
+        },
+        "lat/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lat"
+            ],
+            "axis": "Y",
+            "comment": " Latitude geographical coordinates,WGS84 projection",
+            "long_name": "latitude",
+            "standard_name": "latitude",
+            "units": "degrees_north",
+            "valid_max": 90.0,
+            "valid_min": -90.0
+        },
+        "lon/.zarray": {
+            "chunks": [
+                1440
+            ],
+            "compressor": {
+                "blocksize": 0,
+                "clevel": 5,
+                "cname": "lz4",
+                "id": "blosc",
+                "shuffle": 1
+            },
+            "dtype": "<f4",
+            "fill_value": "NaN",
+            "filters": null,
+            "order": "C",
+            "shape": [
+                1440
+            ],
+            "zarr_format": 2
+        },
+        "lon/.zattrs": {
+            "_ARRAY_DIMENSIONS": [
+                "lon"
+            ],
+            "axis": "X",
+            "comment": " Longitude geographical coordinates,WGS84 projection",
+            "long_name": "longitude",
+            "standard_name": "longitude",
+            "units": "degrees_east",
+            "valid_max": 180.0,
+            "valid_min": -180.0
+        }
+    },
+    "zarr_consolidated_format": 1
+}
