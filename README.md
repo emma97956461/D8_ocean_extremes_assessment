@@ -164,7 +164,7 @@ The toolkit includes **13 oceanic regions** based on the Global Oceans and Seas 
 
 | Region | Latitude Range | Description |
 |--------|----------------|-------------|
-| `Southern_Ocean` | ≤ -40°S | Southern ocean areas |
+| `Southern_Ocean` | -50°S t -40°S | Southern ocean areas |
 | `Pacific_Equatorial` | -10° to 10° | Equatorial Pacific |
 | `Atlantic_Equatorial` | -10° to 10° | Equatorial Atlantic |
 | `Indian_Equatorial` | -10° to 10° | Equatorial Indian Ocean |
@@ -287,12 +287,3 @@ regional_pdfs, masks = quick_regional_analysis(models, method='ultrafast')
 - Review example notebooks for complete workflows
 - Verify data preprocessing steps are correctly applied
 
----
-
-## 📄 License
-
-Please refer to the repository license file for usage terms.
-
-## 🤝 Contributing
-
-Questions, bug reports, and feature requests are welcome. Please open an issue or refer to the example notebooks for guidance.
