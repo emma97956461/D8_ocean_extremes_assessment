@@ -687,16 +687,18 @@ def compute_global_pdfs_classic(models_dict, bins=100, xlim=(-5, 5)):
 
 
 
-# MODIFIED: Update compute_regional_pdfs_classic to handle both formats
-def compute_regional_pdfs_classic(models_dict, bins=100, xlim=(-5, 5), regions=None):
+#============================================================================================================
+# prova
+#============================================================================================================
+def compute_regional_pdfs_classic_fast(models_dict, bins=100, xlim=(-5, 5), regions=None):
     """
-    Compute regional PDFs for multiple models using classic histogram method
-    MODIFIED: Now accepts both (dataset, var_name) tuples and direct data arrays
+    FAST VERSION: Compute regional PDFs using the same approach as global PDFs but with masks
     """
-    print("COMPUTING REGIONAL PDFS")
+    print("COMPUTING REGIONAL PDFS (FAST)")
     print("=" * 55)
     
     # Create model-specific masks
+    print("Creating model-specific masks...")
     masks_dict = create_model_specific_masks(models_dict)
     
     if regions is None:
@@ -711,40 +713,142 @@ def compute_regional_pdfs_classic(models_dict, bins=100, xlim=(-5, 5), regions=N
         for model_name, model_value in models_dict.items():
             print(f"  {model_name}...")
             
-            # Get model-specific mask
-            mask = masks_dict[model_name][region_name]
-            
-            # Extract data array using helper function
-            data_array = extract_data_array(model_value)
-            
-            regional_data = data_array.where(mask)
+            try:
+                # Extract data array
+                data_array = extract_data_array(model_value)
                 
-            # Flatten and remove NaNs
-            values = regional_data.values.flatten()
-            clean_data = values[~np.isnan(values)]
-            
-            if len(clean_data) == 0:
-                print(f"    Warning: No data for {region_name} in {model_name}")
-                continue
-            
-            # Compute histogram
-            counts, bin_edges = np.histogram(clean_data, bins=bins, range=xlim, density=True)
-            bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-            
-            regional_pdfs[region_name][model_name] = {
-                'counts': counts,
-                'bin_centers': bin_centers,
-                'bin_edges': bin_edges,
-                'stats': {
-                    'mean': np.mean(clean_data),
-                    'std': np.std(clean_data),
-                    'n_points': len(clean_data)
+                # Get model-specific mask
+                if region_name not in masks_dict[model_name]:
+                    continue
+                    
+                region_mask = masks_dict[model_name][region_name]
+                
+                # Apply mask to create a new data array where masked values are NaN
+                # This is the key: let dask handle the masking efficiently
+                masked_data = data_array.where(region_mask)
+                
+                # Use the SAME approach as global PDFs but on the masked data
+                # This should be fast because it uses dask's efficient histogram
+                n_total = int(masked_data.count().compute())
+                mean_val = float(masked_data.mean().compute())
+                std_val = float(masked_data.std().compute())
+                
+                # Compute histogram with fixed range using dask (just like global)
+                counts, bin_edges = da.histogram(masked_data.data, bins=bins, range=xlim, density=True)
+                counts = counts.compute()
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                
+                regional_pdfs[region_name][model_name] = {
+                    'counts': counts,
+                    'bin_centers': bin_centers,
+                    'bin_edges': bin_edges,
+                    'stats': {
+                        'mean': mean_val,
+                        'std': std_val,
+                        'n_points': n_total
+                    }
                 }
-            }
-            
-            print(f"    {len(clean_data):,} points, mean: {np.mean(clean_data):.3f}")
+                
+                print(f"    {n_total:,} points, mean: {mean_val:.3f}")
+                
+            except Exception as e:
+                print(f"    ERROR processing {model_name} in {region_name}: {str(e)}")
+                continue
     
     return regional_pdfs, masks_dict
+
+
+def compute_regional_pdfs_classic_ultrafast(models_dict, bins=100, xlim=(-5, 5), regions=None):
+    """
+    ULTRA-FAST VERSION: Process all regions for one model at a time to minimize memory overhead
+    """
+    print("COMPUTING REGIONAL PDFS (ULTRA-FAST)")
+    print("=" * 55)
+    
+    # Create model-specific masks
+    print("Creating model-specific masks...")
+    masks_dict = create_model_specific_masks(models_dict)
+    
+    if regions is None:
+        regions = list(masks_dict[list(masks_dict.keys())[0]].keys())
+    
+    regional_pdfs = {region: {} for region in regions}
+    
+    # Process one model at a time to minimize memory usage
+    for model_name, model_value in models_dict.items():
+        print(f"\nProcessing model: {model_name}")
+        
+        try:
+            # Extract data array once per model
+            data_array = extract_data_array(model_value)
+            
+            # Get all masks for this model
+            model_masks = masks_dict[model_name]
+            
+            for region_name in regions:
+                if region_name not in model_masks:
+                    continue
+                    
+                print(f"  Region: {region_name}")
+                
+                region_mask = model_masks[region_name]
+                
+                # Apply mask and compute histogram efficiently
+                masked_data = data_array.where(region_mask)
+                
+                # Use dask's built-in histogram (fast!)
+                n_total = int(masked_data.count().compute())
+                mean_val = float(masked_data.mean().compute())
+                std_val = float(masked_data.std().compute())
+                
+                counts, bin_edges = da.histogram(masked_data.data, bins=bins, range=xlim, density=True)
+                counts = counts.compute()
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                
+                regional_pdfs[region_name][model_name] = {
+                    'counts': counts,
+                    'bin_centers': bin_centers,
+                    'bin_edges': bin_edges,
+                    'stats': {
+                        'mean': mean_val,
+                        'std': std_val,
+                        'n_points': n_total
+                    }
+                }
+                
+                print(f"    {n_total:,} points, mean: {mean_val:.3f}")
+                
+        except Exception as e:
+            print(f"  ERROR processing {model_name}: {str(e)}")
+            continue
+    
+    return regional_pdfs, masks_dict
+
+
+# Update the quick analysis to use the fast version
+def quick_regional_analysis(models_dict, bins=100, xlim=(-5, 5), regions=None, method='fast'):
+    """Quick regional PDF analysis with optimized performance"""
+    if method == 'ultrafast':
+        regional_pdfs, masks_dict = compute_regional_pdfs_classic_ultrafast(
+            models_dict, bins=bins, xlim=xlim, regions=regions
+        )
+    elif method == 'fast':
+        regional_pdfs, masks_dict = compute_regional_pdfs_classic_fast(
+            models_dict, bins=bins, xlim=xlim, regions=regions
+        )
+    else:
+        regional_pdfs, masks_dict = compute_regional_pdfs_classic(
+            models_dict, bins=bins, xlim=xlim, regions=regions
+        )
+    
+    plot_regional_pdfs_classic(regional_pdfs, regions=regions)
+    return regional_pdfs, masks_dict
+
+
+
+#============================================================================================================
+# prova
+#============================================================================================================
 
 
 def plot_global_pdfs_classic(pdfs_dict, title="Global SST Anomaly PDFs"):
@@ -836,12 +940,6 @@ def quick_global_analysis(models_dict, bins=100, xlim=(-5, 5)):
     pdfs = compute_global_pdfs_classic(models_dict, bins=bins, xlim=xlim)
     plot_global_pdfs_classic(pdfs)
     return pdfs
-
-def quick_regional_analysis(models_dict, bins=100, xlim=(-5, 5), regions=None):
-    """Quick regional PDF analysis"""
-    regional_pdfs, masks_dict = compute_regional_pdfs_classic(models_dict, bins=bins, xlim=xlim, regions=regions)
-    plot_regional_pdfs_classic(regional_pdfs, regions=regions)
-    return regional_pdfs, masks_dict
 
 
 
@@ -982,100 +1080,6 @@ def compute_global_seasonal_pdfs_classic(models_dict, bins=100, xlim=(-5, 5), by
 
 
 
-def compute_regional_seasonal_pdfs_classic(models_dict, bins=100, xlim=(-5, 5), regions=None):
-    """
-    Compute regional seasonal PDFs for multiple models using classic histogram method
-    MODIFIED: Now accepts both (dataset, var_name) tuples and direct data arrays
-    """
-    print("COMPUTING REGIONAL SEASONAL PDFS (EXCLUDING EQUATORIAL REGIONS)")
-    print("=" * 70)
-    
-    seasons = {
-        'DJF': [12, 1, 2],
-        'MAM': [3, 4, 5], 
-        'JJA': [6, 7, 8],
-        'SON': [9, 10, 11]
-    }
-    
-    # Create model-specific masks
-    masks_dict = create_model_specific_masks(models_dict)
-    
-    # Filter out equatorial regions
-    all_regions = list(masks_dict[list(masks_dict.keys())[0]].keys())
-    equatorial_keywords = ['equatorial', 'Equatorial']
-    non_equatorial_regions = [
-        region for region in all_regions 
-        if not any(keyword in region for keyword in equatorial_keywords)
-    ]
-    
-    if regions is None:
-        regions = non_equatorial_regions
-    else:
-        # Ensure only non-equatorial regions are included
-        regions = [region for region in regions if region in non_equatorial_regions]
-    
-    print(f"Non-equatorial regions for seasonal analysis: {regions}")
-    
-    regional_seasonal_pdfs = {}
-    
-    for season_name, season_months in seasons.items():
-        print(f"\nProcessing season: {season_name}")
-        regional_seasonal_pdfs[season_name] = {}
-        
-        for region_name in regions:
-            print(f"  Region: {region_name}")
-            regional_seasonal_pdfs[season_name][region_name] = {}
-            
-            for model_name, model_value in models_dict.items():
-                print(f"    {model_name}...")
-                
-                # Get model-specific mask
-                mask = masks_dict[model_name][region_name]
-                
-                # Extract data array using helper function
-                data_array = extract_data_array(model_value)
-                
-                try:
-                    # Select data for the season months
-                    if 'time' in data_array.dims:
-                        season_data = data_array.sel(time=data_array.time.dt.month.isin(season_months))
-                    else:
-                        print(f"      Warning: No time dimension in {model_name}, using all data")
-                        season_data = data_array
-                    
-                    # Apply regional mask
-                    regional_data = season_data.where(mask)
-                    
-                    # Flatten and remove NaNs
-                    values = regional_data.values.flatten()
-                    clean_data = values[~np.isnan(values)]
-                    
-                    if len(clean_data) == 0:
-                        print(f"      Warning: No data for {region_name} in {model_name} season {season_name}")
-                        continue
-                    
-                    # Compute histogram
-                    counts, bin_edges = np.histogram(clean_data, bins=bins, range=xlim, density=True)
-                    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-                    
-                    regional_seasonal_pdfs[season_name][region_name][model_name] = {
-                        'counts': counts,
-                        'bin_centers': bin_centers,
-                        'bin_edges': bin_edges,
-                        'stats': {
-                            'mean': np.mean(clean_data),
-                            'std': np.std(clean_data),
-                            'n_points': len(clean_data)
-                        }
-                    }
-                    
-                    print(f"      {len(clean_data):,} points, mean: {np.mean(clean_data):.3f}")
-                    
-                except Exception as e:
-                    print(f"      Error processing {model_name} - {region_name} - {season_name}: {e}")
-                    continue
-    
-    return regional_seasonal_pdfs, masks_dict
 
 
 
