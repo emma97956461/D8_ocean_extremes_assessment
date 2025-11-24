@@ -144,8 +144,20 @@ def create_pdf_specific_shapefile_mask(data_array, model_name=None, shapefile_pa
     
     mask_save_dir.mkdir(parents=True, exist_ok=True)
     
-    # Create PDF-specific unique identifier
-    grid_hash = f"pdf_model_{lats.shape[0]}x{lons.shape[0]}_{hash(str(lats[:5].tobytes()) + str(lons[:5].tobytes()))}"
+    # Create PDF-specific unique identifier using model name and grid statistics
+    if model_name:
+        # Use model name with grid stats (min, max of coordinates)
+        lat_stats = (np.round(np.min(lats), 4), np.round(np.max(lats), 4))
+        lon_stats = (np.round(np.min(lons), 4), np.round(np.max(lons), 4))
+        grid_hash = f"pdf_{model_name}_{lats.shape[0]}x{lons.shape[0]}_{hash(lat_stats + lon_stats)}"
+    else:
+        # Fallback to original method with improved sampling
+        lat_sample = lats.flat[:10] if hasattr(lats, 'flat') else lats[:10]
+        lon_sample = lons.flat[:10] if hasattr(lons, 'flat') else lons[:10]
+        lat_repr = tuple(np.round(lat_sample, 6))
+        lon_repr = tuple(np.round(lon_sample, 6))
+        grid_hash = f"pdf_model_{lats.shape[0]}x{lons.shape[0]}_{hash(lat_repr + lon_repr)}"
+    
     mask_file = mask_save_dir / f"{grid_hash}_region_masks.zarr"
     
     # Check if PDF masks already exist for this specific grid
@@ -1326,3 +1338,5 @@ def quick_regional_seasonal_analysis(models_dict, bins=100, xlim=(-5, 5), region
     )
     plot_regional_seasonal_pdfs_classic(regional_seasonal_pdfs, regions=regions)
     return regional_seasonal_pdfs, masks_dict
+
+
