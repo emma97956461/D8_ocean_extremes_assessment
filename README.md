@@ -142,12 +142,12 @@ plot_model_masks(masks_dict, model_name)
 
 ### Core Functions
 
-#### 1. Extreme Event Frequency
+#### 1. Extreme Days Frequency
 ```python
 compute_regional_extremes(models_dict, normalize=True, per_grid_cell=True)
 quick_regional_extremes_analysis(models_dict, plot_type='barchart')
 ```
-- Counts extreme event days in each region
+- Counts extreme days in each region
 - Normalization options: days/year, per grid cell
 - Visualization: barcharts, heatmaps, single-model plots
 
@@ -278,7 +278,7 @@ if lon_range == (0, 360):
     sst_data = sst_data.assign_coords(lon=(((sst_data.lon + 180) % 360) - 180))
     sst_data = sst_data.sortby('lon')
 
-# 4. For extreme events: create boolean mask
+# 4. For extremes: create boolean mask
 threshold = sst_data.quantile(0.95, dim='time')
 extreme_events = sst_data > threshold
 ```
@@ -340,50 +340,91 @@ mhw_events = compute_mhw_events_for_models(extreme_events, max_events_per_cell=5
 
 ### Complete PDF Workflow
 ```python
+### Complete PDF Workflow
+```python
 from DV8_PDFs import *
 
-# 1. Load and prepare SST anomaly data
-sst = xr.open_dataset('sst_data.nc')['sst_anomaly']
-sst = sst.where((sst.lat >= -50) & (sst.lat <= 70), drop=True)
-sst = sst.where(sst > -1.7)
+# 1. Load and prepare SST anomaly data for multiple models
+# OSTIA
+file_name = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'OSTIA_pre_1982_2014_FixedDetrend_hob_oct25.zarr'
+ossta = xr.open_zarr(str(file_name), chunks={'time': 400, 'lat': -1, 'lon': -1})['dat_anomaly']
+ossta = ossta.sel(lat=slice(-50, 70)).where(sst > -1.7)
+
+# ICON (with coordinate transformation)
+file_name = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'ICONhist_pre_1982_2014_FixedDetrend_hob_nov25.zarr'
+i_ds = xr.open_zarr(str(file_name), chunks={'time': 150, 'lat': -1, 'lon': -1})
+i_ds = lon_180w_180e(i_ds)
+issta = i_ds['dat_anomaly'].sel(lat=slice(-50, 70)).where(sst_ic > -1.7)
+
+# IFS-FESOM (with coordinate transformation)  
+file_name = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'IfsFesom_pre_1982_2014_FixedDetrend_hob_nov25.zarr'
+f_ds = xr.open_zarr(str(file_name), chunks={'time': 150, 'lat': -1, 'lon': -1})
+f_ds = lon_180w_180e(f_ds)
+fssta = f_ds['dat_anomaly'].sel(lat=slice(-50, 70)).where(sst_f > -1.7)
 
 # 2. Create model dictionary
-models = {'Observations': sst}
+models_dict = {
+    'OSTIA': ossta,
+    'ICON': issta, 
+    'IFS-FESOM': fssta
+}
 
-# 3. Run analyses
-global_pdf = quick_global_analysis(models)
-regional_pdfs, masks = quick_regional_analysis(models, method='ultrafast')
-seasonal_pdfs = quick_global_seasonal_analysis(models, by_hemisphere=True)
+# 3. Create regional masks for each model
+masks_dict = create_model_specific_masks(models_dict)
 
-# 4. Visualize masks
-quick_visualize_masks(masks, 'Observations')
+# 4. For actual PDF analysis, you would use the masks with your SST anomaly data
+# This would involve calculating PDFs per region for each model
+# and comparing the distributions
 ```
 
 ### Complete Extreme Events Workflow
 ```python
 from DV8_extremes import *
 
-# 1. Detect extreme events (95th percentile)
-threshold = sst.quantile(0.95, dim='time')
-extreme_events_data = sst > threshold
-models = {'Observations': extreme_events_data}
+# 1. Load precomputed extreme events (fixed baseline) and preprocess
+# OSTIA
+file_name = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'OSTIA_pre_1982_2014_FixedDetrend_hob_oct25.zarr'
+ds = xr.open_zarr(str(file_name), chunks={'time': 400, 'lat': -1, 'lon': -1})
+ds = ds.sel(lat=slice(-50, 70))
+o_ex = ds['extreme_events']
 
-# 2. Regional extreme frequency
-regional_data, masks = compute_regional_extremes(models, normalize=True)
+# ICON HIST
+file_name = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'ICONhist_pre_1982_2014_FixedDetrend_hob_nov25.zarr'
+i_ds = xr.open_zarr(str(file_name), chunks={'time': 400, 'lat': -1, 'lon': -1})
+i_ds = lon_180w_180e(i_ds)
+i_ds = i_ds.sel(lat=slice(-50, 70))
+i_ex = i_ds['extreme_events'].astype(float) > 0.5  # Convert to boolean
 
-# 3. MHW detection and analysis
-mhw_events, regional_mhw, masks = selective_mhw_analysis(
-    models,
-    plots_to_show=['regional_summary', 'events_map'],
-    min_duration=5,
-    max_gap=2
-)
+# IFS-FESOM
+file_name = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'IfsFesom_pre_1982_2014_FixedDetrend_hob_nov25.zarr'
+f_ds = xr.open_zarr(str(file_name), chunks={'time': 400, 'lat': -1, 'lon': -1})
+f_ds = lon_180w_180e(f_ds)
+f_ds = f_ds.sel(lat=slice(-50, 70))
+f_ex = f_ds['extreme_events'].astype(float) > 0.5  # Convert to boolean
 
-# 4. Intensity analysis
-intensity_data = compute_event_intensity_vectorized(
-    mhw_events['Observations'], 
-    sst  # Original SSTA data
-)
+# 2. Create models dictionary
+models = {
+    'OSTIA': o_ex,
+    'ICON': i_ex, 
+    'IFS-FESOM': f_ex
+}
+
+# 3. Create regional masks
+masks = create_model_specific_masks(models)
+
+# 4. Load SST anomalies for intensity analysis
+ossta = ds['dat_anomaly'].where(sst > -1.7)  # Apply sea ice mask
+issta = i_ds['dat_anomaly'].where(sst_ic > -1.7)
+fssta = f_ds['dat_anomaly'].where(sst_f > -1.7)
+
+ssta_data = {
+    'OSTIA': ossta,
+    'ICON': issta,
+    'IFS-FESOM': fssta
+}
+
+# 5. Regional analysis and MHW detection would follow using the actual functions
+# from DV8_extremes that match the notebook implementation
 ```
 
 ---
