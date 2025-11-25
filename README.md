@@ -430,6 +430,17 @@ ssta_data = {
 ---
 
 ## 📝 Citation
+For the marEx data source and processing:
+
+```bibtex
+@software{marEx2024,
+  author = {Wienkers, Aaron},
+  title = {marEx: Marine Extremes Data Processing Package},
+  year = {2024},
+  url = {https://github.com/wienkers/marEx/tree/main},
+  doi = {10.5281/zenodo.16922881}
+}
+```
 
 When using the shapefile-based regional masks, please cite:
 
