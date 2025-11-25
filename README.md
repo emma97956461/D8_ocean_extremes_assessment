@@ -1,38 +1,203 @@
-Here's the updated README.md file with comprehensive documentation for the new extreme event analysis functions:
-
 # 🌊 Oceanic Region Analysis Toolkit
 
-A Python toolkit for analyzing sea surface temperature (SST) anomalies across oceanic regions using probability density functions (PDFs), extreme value analysis, and marine heatwave (MHW) detection.
+> **Data Source Notice**: This toolkit is designed to analyze SST anomalies and SST extremes obtained from **[marEx](https://github.com/wienkers/marEx/tree/main)** (Marine Extremes). The marEx package provides the processed sea surface temperature data, extreme event detection, and marine heatwave identification that serve as input to this regional analysis toolkit.
+
+---
+
+## 🔗 marEx Integration
+
+This toolkit works seamlessly with output from the [marEx package](https://github.com/wienkers/marEx/tree/main), which provides:
+
+- **SST Anomaly Calculation**: Processed sea surface temperature anomalies
+- **Extreme Event Detection**: Boolean arrays identifying extreme SST days
+- **MHW Identification**: Marine heatwave event detection and characterization
+- **Data Preprocessing**: Quality control, filtering, and standardization
+
+### Typical Workflow:
+1. **Use marEx** to process raw SST data and detect extremes/MHWs
+2. **Use this toolkit** to analyze regional distributions and characteristics
+3. **Compare results** across oceanic regions and models
+
+For detailed information on data processing and extreme event detection, refer to the [marEx documentation](https://github.com/wienkers/marEx/tree/main).
 
 ---
 
 ## 📋 Table of Contents
 
-- [Features](#-features)
-- [Installation](#-installation)
-- [Quick Start](#-quick-start)
-- [Data Preparation](#-data-preparation)
-- [Usage Guide](#-usage-guide)
-- [Regional Definitions](#-regional-definitions)
-- [Extreme Event Analysis](#-extreme-event-analysis)
-- [Performance Optimization](#-performance-optimization)
-- [Examples](#-examples)
-- [Citation](#-citation)
-- [Troubleshooting](#-troubleshooting)
+- [Overview](#overview)
+- [Mask Creation System](#mask-creation-system)
+- [DV8_PDFs.py - PDF Analysis Functions](#dv8_pdfspy---pdf-analysis-functions)
+- [DV8_extremes.py - Extreme Event Analysis](#dv8_extremespy---extreme-event-analysis)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Data Preparation](#data-preparation)
+- [Regional Definitions](#regional-definitions)
+- [Performance Optimization](#performance-optimization)
+- [Examples](#examples)
+- [Citation](#citation)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
-## ✨ Features
+## Overview
 
-- **Regional PDF Analysis**: Compute probability density functions for 13 predefined oceanic regions
-- **Global & Seasonal Analysis**: Analyze SST anomalies globally or by season/hemisphere
-- **Extreme Value Detection**: Identify and analyze extreme temperature events
-- **Marine Heatwave (MHW) Analysis**: Detect, characterize, and analyze MHW events
-- **Intensity Analysis**: Compute MHW intensity metrics (average, maximum, median)
-- **Model-Specific Grid Support**: Automatic mask generation for different model grids
-- **Performance Optimized**: Multiple processing modes for datasets of any size
-- **Flexible Input**: Works with xarray DataArrays or (dataset, variable) tuples
-- **Visualization Ready**: Built-in plotting functions with consistent styling
+This toolkit consists of two main modules with distinct purposes:
+
+- **`DV8_PDFs.py`** - Analyzes **SST anomaly distributions** using probability density functions (PDFs)
+- **`DV8_extremes.py`** - Analyzes **extreme events and MHWs** using event detection and characterization
+
+Both modules share the same regional mask system but store masks separately to avoid conflicts.
+
+---
+
+## 🎭 Mask Creation System
+
+### Separate Mask Directories
+
+The toolkit creates **model-specific masks** that are automatically cached for efficiency:
+
+| Analysis Type | Mask Directory | Purpose |
+|---------------|----------------|---------|
+| **PDF Analysis** | `pdf_model_masks/` | SST anomaly distribution analysis |
+| **Extreme Events** | `model_masks/` | Extreme event and MHW analysis |
+
+### How Mask Creation Works
+
+1. **Automatic Grid Detection**: For each model, the toolkit analyzes the grid coordinates (latitudes & longitudes)
+2. **Unique Hashing**: Creates a unique hash based on grid characteristics (size, coordinate ranges)
+3. **Shapefile Processing**: Uses the Global Oceans and Seas shapefile to create precise regional masks
+4. **Mutual Exclusivity**: Ensures no grid point belongs to multiple regions using priority ordering
+5. **Zarr Caching**: Saves masks in efficient Zarr format for fast reloading
+
+### Key Mask Functions
+
+```python
+# Both files contain these core mask functions:
+create_model_specific_masks()      # Main entry point
+create_*_shapefile_mask()          # PDF or extremes specific
+ensure_mutually_exclusive_masks()  # Prevent region overlaps
+```
+
+### Regions Created
+
+13 oceanic regions with priority ordering:
+1. `Southern_Ocean` (-50°S to -40°S)
+2. `Pacific_Equatorial`, `Atlantic_Equatorial`, `Indian_Equatorial` (-10° to 10°)
+3. Subtropical and mid-latitude regions (10°-70°N/S)
+4. `Mediterranean_Sea`
+
+---
+
+## 📊 DV8_PDFs.py - PDF Analysis Functions
+
+**Purpose**: Analyze the distribution of SST anomalies using probability density functions.
+
+### Core Functions
+
+#### 1. Global PDF Analysis
+```python
+quick_global_analysis(models_dict, bins=100, xlim=(-5, 5))
+```
+- Computes PDFs for entire dataset (all regions combined)
+- Returns histogram-based probability densities
+- Includes basic statistics (mean, std, data points)
+
+#### 2. Regional PDF Analysis
+```python
+quick_regional_analysis(models_dict, method='fast', regions=None)
+```
+- Computes PDFs for each of the 13 oceanic regions separately
+- **Methods**: `'fast'` (region-by-region) or `'ultrafast'` (model-by-model)
+- Uses PDF-specific masks from `pdf_model_masks/`
+
+#### 3. Seasonal PDF Analysis
+```python
+quick_global_seasonal_analysis(models_dict, by_hemisphere=False)
+quick_regional_seasonal_analysis(models_dict, regions=None)
+```
+- **Global seasonal**: PDFs for DJF, MAM, JJA, SON (optionally by hemisphere)
+- **Regional seasonal**: Seasonal PDFs for each region (excludes equatorial regions)
+- Excludes equatorial regions from seasonal analysis since they don't have strong seasons
+
+#### 4. Mask Visualization
+```python
+quick_visualize_masks(masks_dict, model_name)
+plot_combined_regions_mask(masks_dict, model_name)
+plot_model_masks(masks_dict, model_name)
+```
+- Visualize regional masks for quality control
+- Combined view (all regions) and individual region plots
+
+### Key Features
+- **Classic histogram method** with fixed temperature ranges
+- **Dask-optimized** for large datasets
+- **Flexible input**: Accepts xarray DataArrays or (dataset, variable) tuples
+- **Automatic mask management** with PDF-specific caching
+
+---
+
+## 🌡️ DV8_extremes.py - Extreme Event Analysis
+
+**Purpose**: Detect and analyze extreme SST events and marine heatwaves (MHWs).
+
+### Core Functions
+
+#### 1. Extreme Event Frequency
+```python
+compute_regional_extremes(models_dict, normalize=True, per_grid_cell=True)
+quick_regional_extremes_analysis(models_dict, plot_type='barchart')
+```
+- Counts extreme event days in each region
+- Normalization options: days/year, per grid cell
+- Visualization: barcharts, heatmaps, single-model plots
+
+#### 2. MHW Event Detection
+```python
+compute_mhw_events_for_models(extreme_events_dict, min_duration=5, max_gap=2)
+quick_mhw_events_analysis(models_dict, plot_maps=True, plot_regional=True)
+selective_mhw_analysis(models_dict, plots_to_show=['regional_summary'])
+```
+- Detects MHW events from extreme event data
+- **Parameters**: Minimum duration, maximum gap for merging events
+- **Output**: Event count, duration, start/end times for each grid cell
+
+#### 3. MHW Intensity Analysis
+```python
+compute_event_intensity_vectorized(mhw_events_ds, ssta_data)
+compute_event_intensity_map_blocks(mhw_events_ds, ssta_data)
+```
+- Computes intensity metrics using original SSTA data:
+  - `avg_intensity`: Mean SSTA during events
+  - `max_intensity`: Peak SSTA during events  
+  - `median_intensity`: Median SSTA during events
+- **Optimized versions**: Vectorized and map_blocks for large datasets
+
+#### 4. Regional MHW Statistics
+```python
+compute_regional_mhw_events(mhw_events_dict, masks_dict)
+```
+- Aggregates MHW statistics by region:
+  - Event count, total event days, average duration
+  - Normalized by grid cell count or regional totals
+
+#### 5. Comprehensive Visualization
+```python
+plot_mhw_event_count_map(mhw_events_dict, model_name)
+plot_mhw_avg_duration_map(mhw_events_dict, model_name)
+plot_regional_mhw_events_barchart(regional_mhw_data, metric='event_count')
+plot_duration_intensity_scatter(mhw_events_ds, intensity_ds)
+```
+- Spatial maps of event metrics
+- Regional comparisons across models
+- Duration-intensity relationships
+- Multi-model intensity comparisons
+
+### Key Features
+- **Structured MHW detection** with duration and gap parameters
+- **Intensity computation** using original SSTA values
+- **Comprehensive regional statistics** for MHW characteristics
+- **Advanced visualization** for spatial and comparative analysis
+- **Performance optimized** with Dask parallelization
 
 ---
 
@@ -44,12 +209,12 @@ pip install numpy matplotlib cartopy xarray scipy dask geopandas pathlib
 
 **Repository Structure:**
 ```
-├── DV8_PDFs.py              # Core PDF analysis functions
-├── DV8_extremes.py          # Extreme value analysis functions
-├── DV8_PDFs.ipynb           # Tutorial notebook for PDF analysis
-├── DV8_extremes.ipynb       # Tutorial notebook for extremes
-├── region_masks.zarr/       # Pre-computed regional masks
-├── model_masks/            # Model-specific mask directory
+├── DV8_PDFs.py              # PDF analysis functions
+├── DV8_extremes.py          # Extreme event analysis functions  
+├── DV8_PDFs.ipynb           # PDF analysis tutorial
+├── DV8_extremes.ipynb       # Extreme events tutorial
+├── pdf_model_masks/         # PDF-specific masks (auto-created)
+├── model_masks/            # Extreme event masks (auto-created)
 └── README.md
 ```
 
@@ -57,395 +222,167 @@ pip install numpy matplotlib cartopy xarray scipy dask geopandas pathlib
 
 ## 🚀 Quick Start
 
-### Basic PDF Analysis
+### PDF Analysis (SST Anomaly Distributions)
 ```python
-import xarray as xr
-from DV8_extremes import *
+from DV8_PDFs import *
 
-# Load your SST anomaly data
+# Load SST anomaly data
 models = {
-    'Model1': sst_anomaly_data1,
+    'Model1': sst_anomaly_data1,  # xarray DataArray with (time, lat, lon)
     'Model2': sst_anomaly_data2
 }
 
-# Run global analysis
-global_pdfs = quick_global_analysis(models, bins=100, xlim=(-5, 5))
-
-# Run regional analysis
+# Quick analyses
+global_pdfs = quick_global_analysis(models)
 regional_pdfs, masks = quick_regional_analysis(models, method='ultrafast')
+seasonal_pdfs = quick_global_seasonal_analysis(models, by_hemisphere=True)
 ```
 
-### Extreme Event Analysis
+### Extreme Event Analysis (MHWs)
 ```python
-# Load extreme event data (boolean arrays: True = extreme event)
+from DV8_extremes import *
+
+# Load extreme event data (boolean: True = extreme day)
 extreme_events = {
     'Model1': extreme_events_data1,  # shape: (time, lat, lon)
     'Model2': extreme_events_data2
 }
 
-# Quick regional extremes analysis
-fig, ax, regional_data = quick_regional_extremes_analysis(
-    extreme_events,
-    plot_type='barchart',
-    per_grid_cell=True,
-    normalize=True
-)
-```
+# Quick analyses
+regional_data, masks = compute_regional_extremes(extreme_events)
+mhw_events, regional_mhw, masks = quick_mhw_events_analysis(extreme_events)
 
-### MHW Event Analysis
-```python
-# Comprehensive MHW analysis
-mhw_events, regional_mhw, masks = quick_mhw_events_analysis(
-    extreme_events,
-    min_duration=5,           # Minimum MHW duration in days
-    max_gap=2,               # Maximum gap to merge events
-    plot_maps=True,
-    plot_regional=True
-)
-
-# Selective MHW analysis
-mhw_events, regional_mhw, masks = selective_mhw_analysis(
-    extreme_events,
-    plots_to_show=['regional_summary', 'events_map']
-)
+# Intensity analysis (requires original SSTA data)
+intensity_data = compute_event_intensity_vectorized(mhw_events['Model1'], ssta_data)
 ```
 
 ---
 
 ## 🔧 Data Preparation
 
-Your SST data should have dimensions `(time, lat, lon)` and be preprocessed as follows:
+### SST Data Requirements
+- **Dimensions**: `(time, lat, lon)`
+- **Coordinates**: `lat`, `lon`, `time`
+- **Values**: SST anomalies in °C
 
-### 1. Filter Latitudes (Ice-Free Oceans)
-
+### Preprocessing Steps
 ```python
-# Retain latitudes between 50°S and 70°N
-sst_data = sst_data.where(
-    (sst_data.lat >= -50) & (sst_data.lat <= 70), 
-    drop=True
-)
-```
+# 1. Filter latitudes (ice-free oceans)
+sst_data = sst_data.where((sst_data.lat >= -50) & (sst_data.lat <= 70), drop=True)
 
-### 2. Remove Sea Ice Contamination
-
-```python
-# Remove gridcells with sea ice (SST ≈ -1.75°C in OSTIA, ICON, IFS-FESOM)
+# 2. Remove sea ice contamination
 sst_data = sst_data.where(sst_data > -1.7)
-```
 
-### 3. Standardize Grid (if needed)
-
-```python
-# Convert longitude from 0→360 to -180→180
+# 3. Standardize longitude if needed
 if lon_range == (0, 360):
-    sst_data = sst_data.assign_coords(
-        lon=(((sst_data.lon + 180) % 360) - 180)
-    )
+    sst_data = sst_data.assign_coords(lon=(((sst_data.lon + 180) % 360) - 180))
     sst_data = sst_data.sortby('lon')
-```
 
-### 4. Extreme Event Detection
-
-For extreme event analysis, you need boolean arrays indicating extreme conditions:
-
-```python
-# Example: Detect extremes as values above 95th percentile
+# 4. For extreme events: create boolean mask
 threshold = sst_data.quantile(0.95, dim='time')
 extreme_events = sst_data > threshold
 ```
 
 ---
 
-## 📖 Usage Guide
-
-### Global PDF Analysis
-
-```python
-# Compute global probability density functions
-pdfs = quick_global_analysis(
-    models_dict=models,
-    bins=100,           # Number of histogram bins
-    xlim=(-5, 5),       # Temperature anomaly range
-    log_scale=False     # Use linear or log scale
-)
-```
-
-### Regional PDF Analysis
-
-```python
-# Analyze specific oceanic regions
-regional_pdfs, masks = quick_regional_analysis(
-    models_dict=models,
-    method='ultrafast',              # 'fast' or 'ultrafast'
-    regions=['Pacific_Equatorial',   # Optional: specify regions
-             'North_Atlantic_MiddleLats']
-)
-```
-
-### Extreme Event Analysis
-
-```python
-# Compute regional extremes
-regional_data, masks = compute_regional_extremes(
-    models_dict=extreme_events,
-    time_dim='time',
-    normalize=True,      # Convert to days/year
-    per_grid_cell=True,  # Normalize by grid cell count
-    regions=None         # All regions by default
-)
-
-# Quick visualization
-fig, ax = plot_regional_extremes_barchart(regional_data)
-fig, ax = plot_regional_extremes_heatmap(regional_data)
-```
-
-### MHW Event Analysis
-
-```python
-# Detect MHW events from extreme event data
-mhw_events_dict = compute_mhw_events_for_models(
-    extreme_events,
-    min_duration=5,      # Minimum event duration (days)
-    max_gap=2,          # Maximum gap to merge events
-    max_events_per_cell=100
-)
-
-# Compute regional MHW statistics
-regional_mhw_data = compute_regional_mhw_events(
-    mhw_events_dict,
-    masks_dict,
-    normalize=True,
-    per_grid_cell=True
-)
-
-# Plot MHW statistics
-fig, ax = plot_mhw_event_count_map(mhw_events_dict, 'Model1')
-fig, ax = plot_mhw_avg_duration_map(mhw_events_dict, 'Model1')
-```
-
-### Intensity Analysis
-
-```python
-# Compute MHW intensity using SSTA data
-intensity_dict = {}
-for model_name, mhw_ds in mhw_events_dict.items():
-    intensity_dict[model_name] = compute_event_intensity_vectorized(
-        mhw_ds,
-        ssta_data[model_name]  # Your original SST anomaly data
-    )
-
-# Plot intensity maps
-fig, ax = plot_avg_intensity_map(intensity_dict['Model1'])
-fig, ax = plot_max_intensity_map(intensity_dict['Model1'])
-fig, ax = plot_duration_intensity_scatter(mhw_ds, intensity_ds)
-```
-
----
-
 ## 🗺️ Regional Definitions
 
-The toolkit includes **13 oceanic regions** based on the Global Oceans and Seas shapefile:
+13 mutually exclusive oceanic regions:
 
-| Region | Latitude Range | Description |
-|--------|----------------|-------------|
-| `Southern_Ocean` | -50°S to -40°S | Southern ocean areas |
-| `Pacific_Equatorial` | -10° to 10° | Equatorial Pacific |
-| `Atlantic_Equatorial` | -10° to 10° | Equatorial Atlantic |
-| `Indian_Equatorial` | -10° to 10° | Equatorial Indian Ocean |
-| `North_Pacific_SubTropics` | 10°N to 30°N | North Pacific subtropics |
-| `North_Pacific_MiddleLats` | 30°N to 70°N | North Pacific mid-latitudes |
-| `South_Pacific_SubTropics` | -40°S to -10°S | South Pacific subtropics |
-| `North_Atlantic_SubTropics` | 10°N to 30°N | North Atlantic subtropics |
-| `North_Atlantic_MiddleLats` | 30°N to 70°N | North Atlantic mid-latitudes |
-| `South_Atlantic_SubTropics` | -40°S to -10°S | South Atlantic subtropics |
-| `Indian_NorthSubTropics` | 10°N to 30°N | Indian Ocean north subtropics |
-| `Indian_SouthSubTropics` | -40°S to -10°S | Indian Ocean south subtropics |
-| `Mediterranean_Sea` | — | Mediterranean Sea region |
+| Region | Latitude Range | Analysis Type |
+|--------|----------------|---------------|
+| `Southern_Ocean` | -50°S to -40°S | Both |
+| `Pacific_Equatorial` | -10° to 10° | Both |
+| `Atlantic_Equatorial` | -10° to 10° | Both |
+| `Indian_Equatorial` | -10° to 10° | Both |
+| `North_Pacific_SubTropics` | 10°N to 30°N | Both |
+| `North_Pacific_MiddleLats` | 30°N to 70°N | Both |
+| `South_Pacific_SubTropics` | -40°S to -10°S | Both |
+| `North_Atlantic_SubTropics` | 10°N to 30°N | Both |
+| `North_Atlantic_MiddleLats` | 30°N to 70°N | Both |
+| `South_Atlantic_SubTropics` | -40°S to -10°S | Both |
+| `Indian_NorthSubTropics` | 10°N to 30°N | Both |
+| `Indian_SouthSubTropics` | -40°S to -10°S | Both |
+| `Mediterranean_Sea` | — | Both |
 
-**Note:** Masks are mutually exclusive (no overlapping grid points) and optimized for SST variance analysis.
-
----
-
-## 🌡️ Extreme Event Analysis
-
-### Key Functions
-
-#### 1. Regional Extreme Frequency
-```python
-regional_data, masks = compute_regional_extremes(
-    extreme_events_dict,
-    normalize=True,      # Output in days/year
-    per_grid_cell=True   # Average per grid cell
-)
-```
-
-#### 2. MHW Event Detection
-```python
-mhw_events = compute_mhw_events_for_models(
-    extreme_events_dict,
-    min_duration=5,      # Minimum MHW duration
-    max_gap=2,          # Merge events with gaps ≤ 2 days
-    max_events_per_cell=100
-)
-```
-
-#### 3. MHW Intensity Analysis
-```python
-intensity_data = compute_event_intensity_vectorized(
-    mhw_events_ds,
-    ssta_data,          # Original SST anomaly data
-    time_dim='time'
-)
-```
-
-#### 4. Quick Analysis Wrappers
-```python
-# All-in-one analysis
-mhw_events, regional_mhw, masks = quick_mhw_events_analysis(extreme_events)
-
-# Selective plotting
-mhw_events, regional_mhw, masks = selective_mhw_analysis(
-    extreme_events,
-    plots_to_show=['regional_summary', 'events_map', 'duration_map']
-)
-```
-
-### Output Metrics
-
-- **Event Count**: Number of MHW events per region/grid cell
-- **Event Duration**: Length of MHW events in days
-- **Total Event Days**: Cumulative MHW days
-- **Average Duration**: Mean duration of MHW events
-- **Intensity Metrics**: Average, maximum, and median SSTA during events
-
-### Visualization Options
-
-- **Spatial Maps**: Event counts, average duration, intensity
-- **Regional Barcharts**: Compare metrics across regions and models
-- **Heatmaps**: Matrix visualization of regional metrics
-- **Scatter Plots**: Duration vs intensity relationships
-- **Grid Plots**: Multi-panel comparisons across metrics
+**Note**: Equatorial regions are excluded from seasonal analysis in regional PDFs.
 
 ---
 
 ## ⚡ Performance Optimization
 
-### Processing Modes
-
-| Mode | Best For | Memory Usage | Speed |
-|------|----------|--------------|-------|
-| `'ultrafast'` | Large datasets (>1GB) | Low | Very Fast |
-| `'fast'` | Medium datasets | Medium | Fast |
-| Default | Small datasets | Higher | Moderate |
-
-### Model-Specific Masks
-
+### PDF Analysis Modes
 ```python
-# Masks are automatically created and cached for each model grid
-masks_dict = create_model_specific_masks(
-    models_dict,
-    shapefile_path='/path/to/shapefile.shp',
-    mask_save_dir='/path/to/mask/directory'
-)
+# For large datasets (>1GB)
+regional_pdfs, masks = quick_regional_analysis(models, method='ultrafast')
 
-# Masks are saved as Zarr files for fast reloading
+# For medium datasets  
+regional_pdfs, masks = quick_regional_analysis(models, method='fast')
 ```
 
-### Memory Management
-
+### Extreme Event Optimization
 ```python
-# For large datasets, use progressive processing
-intensity_data = compute_intensity_progressive(
-    mhw_events_ds,
-    ssta_data,
-    batch_size=100  # Process 100 latitudes at a time
-)
+# Progressive intensity computation for large datasets
+intensity_data = compute_intensity_progressive(mhw_ds, ssta_data, batch_size=100)
 
-# Use Dask for parallel computation
-results = xr.apply_ufunc(
-    compute_function,
-    data,
-    dask='parallelized',
-    output_dtypes=[float]
-)
+# Reduce event storage if needed
+mhw_events = compute_mhw_events_for_models(extreme_events, max_events_per_cell=50)
 ```
 
-**Additional Tips:**
-- Pre-compute masks and save to Zarr format for reuse
-- Use Dask for lazy loading of large datasets
-- Process models sequentially rather than all at once
-- Use `selective_mhw_analysis` to plot only specific visualizations
+### Mask Caching
+- Masks are automatically created and cached per model grid
+- Separate directories prevent conflicts between PDF and extremes analysis
+- Zarr format enables fast reloading of pre-computed masks
 
 ---
 
 ## 📚 Examples
 
-### Basic Workflow
+### Complete PDF Workflow
 ```python
-import xarray as xr
-from DV8_extremes import *
+from DV8_PDFs import *
 
-# 1. Load and prepare data
+# 1. Load and prepare SST anomaly data
 sst = xr.open_dataset('sst_data.nc')['sst_anomaly']
 sst = sst.where((sst.lat >= -50) & (sst.lat <= 70), drop=True)
 sst = sst.where(sst > -1.7)
 
-# 2. Detect extreme events (95th percentile)
-threshold = sst.quantile(0.95, dim='time')
-extreme_events = sst > threshold
+# 2. Create model dictionary
+models = {'Observations': sst}
 
-models = {'Observations': extreme_events}
+# 3. Run analyses
+global_pdf = quick_global_analysis(models)
+regional_pdfs, masks = quick_regional_analysis(models, method='ultrafast')
+seasonal_pdfs = quick_global_seasonal_analysis(models, by_hemisphere=True)
 
-# 3. Analyze extremes
-regional_data, masks = compute_regional_extremes(models)
-
-# 4. MHW analysis
-mhw_events, regional_mhw, masks = quick_mhw_events_analysis(models)
-
-# 5. Intensity analysis
-intensity_data = compute_event_intensity_vectorized(
-    mhw_events['Observations'],
-    sst
-)
+# 4. Visualize masks
+quick_visualize_masks(masks, 'Observations')
 ```
 
-### Advanced Workflow
+### Complete Extreme Events Workflow
 ```python
-# Multi-model comparison with custom regions
-extreme_events_dict = {
-    'Model_A': extremes_a,
-    'Model_B': extremes_b,
-    'Observations': extremes_obs
-}
+from DV8_extremes import *
 
-# Custom region selection
-regions_of_interest = [
-    'Pacific_Equatorial',
-    'North_Atlantic_MiddleLats', 
-    'Southern_Ocean'
-]
+# 1. Detect extreme events (95th percentile)
+threshold = sst.quantile(0.95, dim='time')
+extreme_events_data = sst > threshold
+models = {'Observations': extreme_events_data}
 
-# Comprehensive analysis
+# 2. Regional extreme frequency
+regional_data, masks = compute_regional_extremes(models, normalize=True)
+
+# 3. MHW detection and analysis
 mhw_events, regional_mhw, masks = selective_mhw_analysis(
-    extreme_events_dict,
-    plots_to_show=['regional_summary', 'events_map', 'regional_grid'],
-    regions=regions_of_interest,
+    models,
+    plots_to_show=['regional_summary', 'events_map'],
     min_duration=5,
     max_gap=2
 )
 
-# Intensity comparison
-intensity_dict = {}
-for model_name, mhw_ds in mhw_events.items():
-    intensity_dict[model_name] = compute_event_intensity_vectorized(
-        mhw_ds,
-        ssta_data[model_name]
-    )
-
-# Plot multi-model intensity maps
-fig, axes = plot_multi_model_intensity_maps(
-    intensity_dict,
-    plot_type='avg_intensity'
+# 4. Intensity analysis
+intensity_data = compute_event_intensity_vectorized(
+    mhw_events['Observations'], 
+    sst  # Original SSTA data
 )
 ```
 
@@ -453,7 +390,7 @@ fig, axes = plot_multi_model_intensity_maps(
 
 ## 📝 Citation
 
-When using this toolkit with shapefile-based regional masks, please cite:
+When using the shapefile-based regional masks, please cite:
 
 ```bibtex
 @misc{marineregions2021,
@@ -465,7 +402,7 @@ When using this toolkit with shapefile-based regional masks, please cite:
 }
 ```
 
-For MHW analysis methodology, consider citing:
+For MHW analysis methodology:
 
 ```bibtex
 @article{hobday2016hierarchy,
@@ -485,50 +422,46 @@ For MHW analysis methodology, consider citing:
 
 ### Common Issues
 
-**Memory Errors with Large Datasets**
+**Mask Creation Failures**
+- Verify shapefile exists at expected path
+- Check model grid coordinates are properly defined
+- Ensure sufficient disk space for mask caching
+
+**Memory Errors**
 ```python
-# Solution: Use progressive processing and ultrafast mode
+# PDF analysis: use ultrafast mode
+regional_pdfs, masks = quick_regional_analysis(models, method='ultrafast')
+
+# Extremes analysis: use progressive processing
 intensity_data = compute_intensity_progressive(mhw_ds, ssta_data, batch_size=50)
-regional_data, masks = compute_regional_extremes(models, method='ultrafast')
 ```
 
-**MHW Detection Too Slow**
-```python
-# Reduce maximum events per cell
-mhw_events = compute_mhw_events_for_models(
-    extreme_events,
-    max_events_per_cell=50  # Default: 100
-)
-```
+**Missing Regions**
+- Confirm data covers required latitude range (-50°S to 70°N)
+- Check sea ice filtering hasn't removed entire regions
+- Verify extreme event detection has sufficient data
 
-**Missing Regions in Output**
-- Verify your data covers the required latitude ranges (-50°S to 70°N)
-- Check that sea ice filtering hasn't removed entire regions
-- Ensure extreme event detection hasn't created empty regions
-
-**Shapefile Not Found**
-- The toolkit includes pre-computed masks in `region_masks.zarr/`
-- Model-specific masks are automatically generated and cached
-- If creating custom masks, download the shapefile from [marineregions.org](https://www.marineregions.org/)
-
-**Dimension Errors**
-- Ensure data dimensions are `(time, lat, lon)`
-- Check coordinate names match: `'lat'`, `'lon'`, `'time'`
-- Verify extreme event data is boolean (`True`/`False`)
-
-### Performance Tips
-
-1. **Use Zarr Storage**: Masks are automatically saved in efficient Zarr format
-2. **Batch Processing**: Large datasets can be processed in batches
-3. **Selective Plotting**: Use `selective_mhw_analysis` to avoid unnecessary plots
-4. **Model-Specific Masks**: Masks are cached per model grid for fast reloading
+**Performance Issues**
+- Use `ultrafast` method for large datasets
+- Process specific regions instead of all regions
+- Use selective plotting to avoid unnecessary visualizations
 
 ### Getting Help
 
-- Check function docstrings: `help(compute_regional_extremes)`
-- Review example notebooks for complete workflows
-- Verify data preprocessing steps are correctly applied
-- Use the `quick_` wrapper functions for standard analyses
+- Check function docstrings: `help(quick_global_analysis)`
+- Review tutorial notebooks: `DV8_PDFs.ipynb` and `DV8_extremes.ipynb`
+- Verify data meets preprocessing requirements
+- Ensure proper coordinate names and dimensions
 
 ---
 
+## 🔄 Module Comparison
+
+| Feature | DV8_PDFs.py | DV8_extremes.py |
+|---------|-------------|-----------------|
+| **Primary Purpose** | SST anomaly distributions | Extreme events & MHWs |
+| **Main Output** | Probability density functions | Event counts, durations, intensities |
+| **Mask Directory** | `pdf_model_masks/` | `model_masks/` |
+| **Key Functions** | `quick_global_analysis()`, `quick_regional_analysis()` | `compute_mhw_events()`, `compute_event_intensity()` |
+| **Seasonal Analysis** | Includes global & regional (excl. equatorial) | Not available |
+| **Data Requirement** | SST anomaly values | Boolean extreme event arrays + SSTA for intensity |
