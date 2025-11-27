@@ -29,9 +29,12 @@ def extract_data_array(model_value):
 # SELF-CONTAINED MODEL-SPECIFIC MASK FUNCTIONS (PDF-SPECIFIC)
 # ===================================================================================
 
+
+
 def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
     """
     Ensure that no latitude/longitude point belongs to more than one mask.
+    EXCLUDES the new equatorial Pacific sub-regions from mutual exclusivity check
     """
     print("Ensuring masks are mutually exclusive...")
     
@@ -50,10 +53,21 @@ def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
             'Indian_NorthSubTropics',
             'Indian_SouthSubTropics',
             'Mediterranean_Sea'
+            # Note: Western_Equatorial_Pacific and Eastern_Equatorial_Pacific are excluded
         ]
     
-    bool_masks = {}
+    # Separate the equatorial Pacific sub-regions from the main regions
+    main_region_masks = {}
+    equatorial_pacific_subregions = {}
+    
     for region_name, mask in region_masks.items():
+        if region_name in ['Western_Equatorial_Pacific', 'Eastern_Equatorial_Pacific']:
+            equatorial_pacific_subregions[region_name] = mask
+        else:
+            main_region_masks[region_name] = mask
+    
+    bool_masks = {}
+    for region_name, mask in main_region_masks.items():
         bool_masks[region_name] = mask.values if hasattr(mask, 'values') else mask
     
     unique_masks = bool_masks.copy()
@@ -80,7 +94,7 @@ def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
     result_masks = {}
     for region_name, bool_mask in unique_masks.items():
         # Get coordinates from original mask
-        original_mask = region_masks[region_name]
+        original_mask = main_region_masks[region_name]
         result_masks[region_name] = xr.DataArray(
             bool_mask,
             dims=('lat', 'lon'),
@@ -91,6 +105,9 @@ def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
             name=region_name
         )
     
+    # Add back the equatorial Pacific sub-regions (they can overlap)
+    result_masks.update(equatorial_pacific_subregions)
+    
     return result_masks
 
 def get_region_colors_shapefile():
@@ -99,10 +116,12 @@ def get_region_colors_shapefile():
     """
     return {
         'Southern_Ocean': 'purple',
-        'North_Pacific_SubTropics': 'lightblue',
+        'North_Pacific_SubTropics': 'brown',
         'North_Pacific_MiddleLats': 'blue',
         'South_Pacific_SubTropics': 'darkblue',
         'Pacific_Equatorial': 'lightgreen',
+        'Western_Equatorial_Pacific': 'red',  # Different color for Western
+        'Eastern_Equatorial_Pacific': 'blue',  # Different color for Eastern
         'North_Atlantic_SubTropics': 'yellow',
         'North_Atlantic_MiddleLats': 'orange',
         'South_Atlantic_SubTropics': 'red',
@@ -112,6 +131,7 @@ def get_region_colors_shapefile():
         'Indian_Equatorial': 'darkgreen',
         'Mediterranean_Sea': 'cyan'
     }
+    
 
 def create_pdf_specific_shapefile_mask(data_array, model_name=None, shapefile_path=None, mask_save_dir=None):
     """
@@ -325,7 +345,7 @@ def create_pdf_specific_shapefile_mask(data_array, model_name=None, shapefile_pa
         except Exception as e:
             print(f"  Error creating mask for {name}: {e}")
 
-    # ----- MODIFICATIONS -----
+   # ----- MODIFICATIONS -----
     print("Applying region modifications...")
     
     # 1. Pacific Equatorial modification
@@ -348,6 +368,59 @@ def create_pdf_specific_shapefile_mask(data_array, model_name=None, shapefile_pa
         
         region_masks['Pacific_Equatorial'] = combined_mask
         region_masks['Indian_Equatorial'] = indian.where(~lon_mask, False)
+
+    # NEW: Split Pacific Equatorial into Western and Eastern regions
+    if 'Pacific_Equatorial' in region_masks:
+        print("  Creating Western and Eastern Equatorial Pacific masks...")
+        pacific_eq = region_masks['Pacific_Equatorial']
+        
+        # Create a copy of the mask with 0-360 longitude coordinates
+        pacific_eq_360 = pacific_eq.copy()
+        
+        # Convert longitudes from -180-180 to 0-360
+        if hasattr(pacific_eq_360, 'lon'):
+            # For 1D coordinates
+            if pacific_eq_360.lon.ndim == 1:
+                lon_360 = pacific_eq_360.lon.values.copy()
+                lon_360[lon_360 < 0] += 360
+                pacific_eq_360 = pacific_eq_360.assign_coords(lon=lon_360)
+            else:
+                # For 2D coordinates
+                lon_360 = pacific_eq_360.lon.values.copy()
+                lon_360[lon_360 < 0] += 360
+                pacific_eq_360['lon'] = (('lat', 'lon'), lon_360)
+        
+        # Now split at 150°W = 210° in 0-360 system
+        # Western Equatorial Pacific: longitudes > 210° (150°W to 180°E)
+        # Eastern Equatorial Pacific: longitudes <= 210° (120°E to 150°W)
+        western_mask_360 = pacific_eq_360 & (pacific_eq_360.lon > 210)
+        eastern_mask_360 = pacific_eq_360 & (pacific_eq_360.lon <= 210)
+        
+        # Convert back to -180-180 system
+        western_mask = western_mask_360.copy()
+        eastern_mask = eastern_mask_360.copy()
+        
+        if hasattr(western_mask, 'lon'):
+            # Convert back to -180-180
+            if western_mask.lon.ndim == 1:
+                lon_180 = western_mask.lon.values.copy()
+                lon_180[lon_180 > 180] -= 360
+                western_mask = western_mask.assign_coords(lon=lon_180)
+                eastern_mask = eastern_mask.assign_coords(lon=lon_180)
+            else:
+                lon_180 = western_mask.lon.values.copy()
+                lon_180[lon_180 > 180] -= 360
+                western_mask['lon'] = (('lat', 'lon'), lon_180)
+                eastern_mask['lon'] = (('lat', 'lon'), lon_180)
+        
+        region_masks['Western_Equatorial_Pacific'] = western_mask
+        region_masks['Eastern_Equatorial_Pacific'] = eastern_mask
+        
+        # Debug: Print the sizes of the new regions
+        western_count = np.sum(western_mask.values)
+        eastern_count = np.sum(eastern_mask.values)
+        total_count = np.sum(pacific_eq.values)
+        print(f"    Western points: {western_count}, Eastern points: {eastern_count}, Total: {total_count}")
 
     # 2. North Pacific Subtropics modification
     if ('North Pacific Ocean_MidNorth' in region_masks and 
@@ -436,9 +509,166 @@ def create_model_specific_masks(models_dict, shapefile_path=None, mask_save_dir=
 # MASK VISUALIZATION FUNCTIONS 
 # ===================================================================================
 
+def plot_combined_regions_mask(masks_dict, model_name, figsize=(12, 8), central_longitude=180):
+    """
+    Plot a combined map showing all regions with different colors
+    UPDATED: Shows Western and Eastern Equatorial Pacific with hashed lines in different colors
+    FIXED: Handle contourf collections properly
+    """
+    if model_name not in masks_dict:
+        raise ValueError(f"Model '{model_name}' not found in masks dictionary")
+    
+    model_masks = masks_dict[model_name]
+    regions = list(model_masks.keys())
+    
+    fig, ax = plt.subplots(figsize=figsize,
+                          subplot_kw={'projection': ccrs.PlateCarree(central_longitude=central_longitude)})
+    
+    # Get region colors
+    region_colors = get_region_colors_shapefile()
+    
+    # Create a combined array where each region has a unique value
+    first_mask = model_masks[regions[0]]
+    combined_data = np.zeros(first_mask.shape, dtype=int)
+    
+    # Define priority order for base regions (excluding the overlapping equatorial Pacific sub-regions)
+    base_priority_order = [
+        'Southern_Ocean',
+        'North_Pacific_SubTropics', 'North_Pacific_MiddleLats', 'South_Pacific_SubTropics',
+        'North_Atlantic_SubTropics', 'North_Atlantic_MiddleLats', 'South_Atlantic_SubTropics', 
+        'Indian_NorthSubTropics', 'Indian_SouthSubTropics',
+        'Pacific_Equatorial', 'Atlantic_Equatorial', 'Indian_Equatorial',
+        'Mediterranean_Sea'
+    ]
+    
+    # Filter to only include base regions that actually exist for this model
+    available_base_regions = [r for r in base_priority_order if r in regions]
+    
+    for idx, region_name in enumerate(available_base_regions):
+        mask = model_masks[region_name]
+        # Only assign this region where no previous region has been assigned
+        region_pixels = mask.values & (combined_data == 0)
+        combined_data[region_pixels] = idx + 1
+    
+    # Create colormap for base regions
+    base_colors = [region_colors.get(region, 'gray') for region in available_base_regions]
+    cmap = ListedColormap(['white'] + base_colors)
+    
+    # Get coordinates
+    if hasattr(first_mask, 'lat') and hasattr(first_mask, 'lon'):
+        if first_mask.lat.ndim == 1 and first_mask.lon.ndim == 1:
+            lon_grid, lat_grid = np.meshgrid(first_mask.lon, first_mask.lat)
+        else:
+            lon_grid, lat_grid = first_mask.lon, first_mask.lat
+    else:
+        lon_grid, lat_grid = np.meshgrid(np.arange(first_mask.shape[1]), np.arange(first_mask.shape[0]))
+    
+    # Plot base regions
+    im = ax.pcolormesh(lon_grid, lat_grid, combined_data,
+                      cmap=cmap,
+                      vmin=0, vmax=len(available_base_regions) + 0.5,
+                      transform=ccrs.PlateCarree())
+    
+    # Overlay Western and Eastern Equatorial Pacific with hashed patterns and different colors
+    hatch_patterns = {
+        'Western_Equatorial_Pacific': '////',
+        'Eastern_Equatorial_Pacific': '\\\\\\\\'
+    }
+    
+    # Define specific colors for the hatch lines (different from the base colors)
+    hatch_colors = {
+        'Western_Equatorial_Pacific': 'red',    # Red hatch lines for Western
+        'Eastern_Equatorial_Pacific': 'blue'    # Blue hatch lines for Eastern
+    }
+    
+    for region_name, hatch_pattern in hatch_patterns.items():
+        if region_name in model_masks:
+            mask = model_masks[region_name]
+            mask_data = mask.values if hasattr(mask, 'values') else mask
+            
+            # Create a contour for the hashed region
+            if mask_data.any():  # Only plot if there are True values
+                # Create a masked array for contouring
+                contour_data = np.where(mask_data, 1, 0).astype(float)
+                
+                try:
+                    # Use contourf to create the hashed pattern
+                    contourf = ax.contourf(lon_grid, lat_grid, contour_data, 
+                                          levels=[0.5, 1.5], 
+                                          colors='none',  # No fill color
+                                          hatches=[hatch_pattern],
+                                          transform=ccrs.PlateCarree(),
+                                          alpha=0)
+                    
+                    # Set the edge color for the hatch - use the specific hatch color
+                    hatch_color = hatch_colors.get(region_name, 'gray')
+                    
+                    # Handle different return types
+                    if hasattr(contourf, 'collections'):
+                        # Standard matplotlib contourf
+                        for collection in contourf.collections:
+                            collection.set_edgecolor(hatch_color)
+                            collection.set_linewidth(0.8)  # Slightly thicker for visibility
+                    elif hasattr(contourf, '__iter__'):
+                        # Some versions return an iterable of collections
+                        for collection in contourf:
+                            if hasattr(collection, 'set_edgecolor'):
+                                collection.set_edgecolor(hatch_color)
+                                collection.set_linewidth(0.8)
+                    else:
+                        # Try to access _collections for GeoContourSet objects
+                        try:
+                            for collection in contourf._collections:
+                                collection.set_edgecolor(hatch_color)
+                                collection.set_linewidth(0.8)
+                        except AttributeError:
+                            print(f"Warning: Could not set hatch properties for {region_name}")
+                            
+                except Exception as e:
+                    print(f"Warning: Could not create hatched pattern for {region_name}: {e}")
+    
+    # Add map features
+    ax.coastlines(linewidth=0.8, color='black')
+    ax.add_feature(cfeature.LAND, color='lightgray', zorder=1)
+    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3, zorder=0)
+    ax.set_global()
+    ax.set_extent([-180, 180, -60, 70], crs=ccrs.PlateCarree())
+    
+    # Create legend (include "No Region" for background and hashed regions)
+    legend_patches = [mpatches.Patch(color='white', label='No Region')]
+    
+    # Add base regions
+    for region_name, color in zip(available_base_regions, base_colors):
+        patch = mpatches.Patch(color=color, label=region_name.replace('_', ' ').title())
+        legend_patches.append(patch)
+    
+    # Add hashed regions for equatorial Pacific sub-regions with their specific hatch colors
+    for region_name, hatch_pattern in hatch_patterns.items():
+        if region_name in regions:
+            hatch_color = hatch_colors.get(region_name, 'gray')
+            # Use the hatch color for the facecolor in the legend
+            patch = mpatches.Patch(facecolor=hatch_color, hatch=hatch_pattern, 
+                                 label=region_name.replace('_', ' ').title())
+            legend_patches.append(patch)
+    
+    ax.legend(handles=legend_patches, 
+              loc='center left', 
+              bbox_to_anchor=(1.05, 0.5),
+              frameon=True,
+              fancybox=True,
+              shadow=True)
+    
+    ax.set_title(f'PDF Combined Oceanic Regions - {model_name}\n(Western/Eastern Equatorial Pacific shown with colored hashes)', 
+                 fontsize=14, pad=20)
+    
+    plt.tight_layout()
+    
+    return fig, ax
+
 def plot_model_masks(masks_dict, model_name, figsize=(15, 10), central_longitude=180):
     """
     Plot all region masks for a specific model
+    UPDATED: Includes the new equatorial Pacific sub-regions
     """
     if model_name not in masks_dict:
         raise ValueError(f"Model '{model_name}' not found in masks dictionary")
@@ -511,95 +741,6 @@ def plot_model_masks(masks_dict, model_name, figsize=(15, 10), central_longitude
     plt.tight_layout()
     
     return fig, axes
-
-def plot_combined_regions_mask(masks_dict, model_name, figsize=(12, 8), central_longitude=180):
-    """
-    Plot a combined map showing all regions with different colors
-    FIXED: Properly handle region assignment to prevent overwriting
-    UPDATED: 'No region' now in white instead of lightblue
-    """
-    if model_name not in masks_dict:
-        raise ValueError(f"Model '{model_name}' not found in masks dictionary")
-    
-    model_masks = masks_dict[model_name]
-    regions = list(model_masks.keys())
-    
-    fig, ax = plt.subplots(figsize=figsize,
-                          subplot_kw={'projection': ccrs.PlateCarree(central_longitude=central_longitude)})
-    
-    # Get region colors
-    region_colors = get_region_colors_shapefile()
-    
-    # Create a combined array where each region has a unique value
-    # Start with all zeros (no region)
-    first_mask = model_masks[regions[0]]
-    combined_data = np.zeros(first_mask.shape, dtype=int)
-    
-    # Assign unique values to each region in priority order
-    # This ensures higher priority regions don't get overwritten by lower priority ones
-    priority_order = [
-        'Southern_Ocean',
-        'North_Pacific_SubTropics', 'North_Pacific_MiddleLats', 'South_Pacific_SubTropics',
-        'North_Atlantic_SubTropics', 'North_Atlantic_MiddleLats', 'South_Atlantic_SubTropics', 
-        'Indian_NorthSubTropics', 'Indian_SouthSubTropics',
-        'Pacific_Equatorial', 'Atlantic_Equatorial', 'Indian_Equatorial',
-        'Mediterranean_Sea'
-    ]
-    
-    # Filter to only include regions that actually exist for this model
-    available_regions = [r for r in priority_order if r in regions]
-    
-    for idx, region_name in enumerate(available_regions):
-        mask = model_masks[region_name]
-        # Only assign this region where no previous region has been assigned
-        region_pixels = mask.values & (combined_data == 0)
-        combined_data[region_pixels] = idx + 1
-    
-    # Create colormap for all regions
-    colors = [region_colors.get(region, 'gray') for region in available_regions]
-    # Change 'No region' from lightblue to white
-    cmap = ListedColormap(['white'] + colors)
-    
-    # Get coordinates
-    if hasattr(first_mask, 'lat') and hasattr(first_mask, 'lon'):
-        if first_mask.lat.ndim == 1 and first_mask.lon.ndim == 1:
-            lon_grid, lat_grid = np.meshgrid(first_mask.lon, first_mask.lat)
-        else:
-            lon_grid, lat_grid = first_mask.lon, first_mask.lat
-    else:
-        lon_grid, lat_grid = np.meshgrid(np.arange(first_mask.shape[1]), np.arange(first_mask.shape[0]))
-    
-    # Plot combined data
-    im = ax.pcolormesh(lon_grid, lat_grid, combined_data,
-                      cmap=cmap,
-                      vmin=0, vmax=len(available_regions) + 0.5,
-                      transform=ccrs.PlateCarree())
-    
-    # Add map features
-    ax.coastlines(linewidth=0.8, color='black')
-    ax.add_feature(cfeature.LAND, color='lightgray', zorder=1)
-    ax.add_feature(cfeature.OCEAN, color='lightblue', alpha=0.3, zorder=0)
-    ax.set_global()
-    ax.set_extent([-180, 180, -60, 70], crs=ccrs.PlateCarree())
-    
-    # Create legend (include "No Region" for background)
-    legend_patches = [mpatches.Patch(color='white', label='No Region')]  # Changed to white
-    for region_name, color in zip(available_regions, colors):
-        patch = mpatches.Patch(color=color, label=region_name.replace('_', ' ').title())
-        legend_patches.append(patch)
-    
-    ax.legend(handles=legend_patches, 
-              loc='center left', 
-              bbox_to_anchor=(1.05, 0.5),
-              frameon=True,
-              fancybox=True,
-              shadow=True)
-    
-    ax.set_title(f'PDF Combined Oceanic Regions - {model_name}', fontsize=14, pad=20)
-    
-    plt.tight_layout()
-    
-    return fig, ax
 
 
 
@@ -1338,5 +1479,4 @@ def quick_regional_seasonal_analysis(models_dict, bins=100, xlim=(-5, 5), region
     )
     plot_regional_seasonal_pdfs_classic(regional_seasonal_pdfs, regions=regions)
     return regional_seasonal_pdfs, masks_dict
-
 
