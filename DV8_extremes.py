@@ -11,7 +11,6 @@ from scipy import ndimage
 import geopandas as gpd
 import dask.array as da
 
-
 # ===================================================================================
 # HELPER FUNCTIONS
 # ===================================================================================
@@ -30,6 +29,7 @@ def extract_data_array(model_value):
 def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
     """
     Ensure that no latitude/longitude point belongs to more than one mask.
+    EXCLUDES the new equatorial Pacific sub-regions from mutual exclusivity check
     """
     print("Ensuring masks are mutually exclusive...")
     
@@ -48,10 +48,21 @@ def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
             'Indian_NorthSubTropics',
             'Indian_SouthSubTropics',
             'Mediterranean_Sea'
+            # Note: Western_Equatorial_Pacific and Eastern_Equatorial_Pacific are excluded
         ]
     
-    bool_masks = {}
+    # Separate the equatorial Pacific sub-regions from the main regions
+    main_region_masks = {}
+    equatorial_pacific_subregions = {}
+    
     for region_name, mask in region_masks.items():
+        if region_name in ['Western_Equatorial_Pacific', 'Eastern_Equatorial_Pacific']:
+            equatorial_pacific_subregions[region_name] = mask
+        else:
+            main_region_masks[region_name] = mask
+    
+    bool_masks = {}
+    for region_name, mask in main_region_masks.items():
         bool_masks[region_name] = mask.values if hasattr(mask, 'values') else mask
     
     unique_masks = bool_masks.copy()
@@ -78,7 +89,7 @@ def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
     result_masks = {}
     for region_name, bool_mask in unique_masks.items():
         # Get coordinates from original mask
-        original_mask = region_masks[region_name]
+        original_mask = main_region_masks[region_name]
         result_masks[region_name] = xr.DataArray(
             bool_mask,
             dims=('lat', 'lon'),
@@ -89,8 +100,10 @@ def ensure_mutually_exclusive_masks(region_masks, priority_order=None):
             name=region_name
         )
     
+    # Add back the equatorial Pacific sub-regions (they can overlap)
+    result_masks.update(equatorial_pacific_subregions)
+    
     return result_masks
-
 
 def get_region_colors_shapefile():
     """
@@ -98,10 +111,12 @@ def get_region_colors_shapefile():
     """
     return {
         'Southern_Ocean': 'purple',
-        'North_Pacific_SubTropics': 'lightblue',
+        'North_Pacific_SubTropics': 'brown',
         'North_Pacific_MiddleLats': 'blue',
         'South_Pacific_SubTropics': 'darkblue',
         'Pacific_Equatorial': 'lightgreen',
+        'Western_Equatorial_Pacific': 'red',  # Different color for Western
+        'Eastern_Equatorial_Pacific': 'blue',  # Different color for Eastern
         'North_Atlantic_SubTropics': 'yellow',
         'North_Atlantic_MiddleLats': 'orange',
         'South_Atlantic_SubTropics': 'red',
@@ -144,7 +159,7 @@ def create_model_specific_shapefile_mask(data_array, model_name=None, shapefile_
     
     # Create model-specific mask file path
     if mask_save_dir is None:
-        mask_save_dir = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'DV8' / 'model_masks'
+        mask_save_dir = Path('/scratch') / getuser()[0] / getuser() / 'mhws' / 'DV8' / 'extremes_model_masks'
     
     mask_save_dir.mkdir(parents=True, exist_ok=True)
     
@@ -153,14 +168,14 @@ def create_model_specific_shapefile_mask(data_array, model_name=None, shapefile_
         # Use model name with grid stats (min, max of coordinates)
         lat_stats = (np.round(np.min(lats), 4), np.round(np.max(lats), 4))
         lon_stats = (np.round(np.min(lons), 4), np.round(np.max(lons), 4))
-        grid_hash = f"{model_name}_{lats.shape[0]}x{lons.shape[0]}_{hash(lat_stats + lon_stats)}"
+        grid_hash = f"extremes_{model_name}_{lats.shape[0]}x{lons.shape[0]}_{hash(lat_stats + lon_stats)}"
     else:
         # Fallback to original method
         lat_sample = lats.flat[:10] if hasattr(lats, 'flat') else lats[:10]
         lon_sample = lons.flat[:10] if hasattr(lons, 'flat') else lons[:10]
         lat_repr = tuple(np.round(lat_sample, 6))
         lon_repr = tuple(np.round(lon_sample, 6))
-        grid_hash = f"model_{lats.shape[0]}x{lons.shape[0]}_{hash(lat_repr + lon_repr)}"
+        grid_hash = f"extremes_model_{lats.shape[0]}x{lons.shape[0]}_{hash(lat_repr + lon_repr)}"
     
     mask_file = mask_save_dir / f"{grid_hash}_region_masks.zarr"
     
@@ -309,6 +324,7 @@ def create_model_specific_shapefile_mask(data_array, model_name=None, shapefile_
         except Exception as e:
             print(f"  Error creating equatorial mask for {eq_ocean_name}: {e}")
 
+    
     # ----- Small seas -----
     small_seas = {
         "Mediterranean_Sea": "Mediterranean Region",
@@ -352,6 +368,59 @@ def create_model_specific_shapefile_mask(data_array, model_name=None, shapefile_
         
         region_masks['Pacific_Equatorial'] = combined_mask
         region_masks['Indian_Equatorial'] = indian.where(~lon_mask, False)
+
+    # NEW: Split Pacific Equatorial into Western and Eastern regions
+    if 'Pacific_Equatorial' in region_masks:
+        print("  Creating Western and Eastern Equatorial Pacific masks...")
+        pacific_eq = region_masks['Pacific_Equatorial']
+        
+        # Create a copy of the mask with 0-360 longitude coordinates
+        pacific_eq_360 = pacific_eq.copy()
+        
+        # Convert longitudes from -180-180 to 0-360
+        if hasattr(pacific_eq_360, 'lon'):
+            # For 1D coordinates
+            if pacific_eq_360.lon.ndim == 1:
+                lon_360 = pacific_eq_360.lon.values.copy()
+                lon_360[lon_360 < 0] += 360
+                pacific_eq_360 = pacific_eq_360.assign_coords(lon=lon_360)
+            else:
+                # For 2D coordinates
+                lon_360 = pacific_eq_360.lon.values.copy()
+                lon_360[lon_360 < 0] += 360
+                pacific_eq_360['lon'] = (('lat', 'lon'), lon_360)
+        
+        # Now split at 150°W = 210° in 0-360 system
+        # Western Equatorial Pacific: longitudes > 210° (150°W to 180°E)
+        # Eastern Equatorial Pacific: longitudes <= 210° (120°E to 150°W)
+        western_mask_360 = pacific_eq_360 & (pacific_eq_360.lon > 210)
+        eastern_mask_360 = pacific_eq_360 & (pacific_eq_360.lon <= 210)
+        
+        # Convert back to -180-180 system
+        western_mask = western_mask_360.copy()
+        eastern_mask = eastern_mask_360.copy()
+        
+        if hasattr(western_mask, 'lon'):
+            # Convert back to -180-180
+            if western_mask.lon.ndim == 1:
+                lon_180 = western_mask.lon.values.copy()
+                lon_180[lon_180 > 180] -= 360
+                western_mask = western_mask.assign_coords(lon=lon_180)
+                eastern_mask = eastern_mask.assign_coords(lon=lon_180)
+            else:
+                lon_180 = western_mask.lon.values.copy()
+                lon_180[lon_180 > 180] -= 360
+                western_mask['lon'] = (('lat', 'lon'), lon_180)
+                eastern_mask['lon'] = (('lat', 'lon'), lon_180)
+        
+        region_masks['Western_Equatorial_Pacific'] = western_mask
+        region_masks['Eastern_Equatorial_Pacific'] = eastern_mask
+        
+        # Debug: Print the sizes of the new regions
+        western_count = np.sum(western_mask.values)
+        eastern_count = np.sum(eastern_mask.values)
+        total_count = np.sum(pacific_eq.values)
+        print(f"    Western points: {western_count}, Eastern points: {eastern_count}, Total: {total_count}")
 
     # 2. North Pacific Subtropics modification
     if ('North Pacific Ocean_MidNorth' in region_masks and 
@@ -674,6 +743,8 @@ def plot_model_masks(masks_dict, model_name, figsize=(15, 10), central_longitude
 def plot_combined_regions_mask(masks_dict, model_name, figsize=(12, 8), central_longitude=180):
     """
     Plot a combined map showing all regions with different colors
+    UPDATED: Shows Western and Eastern Equatorial Pacific with hashed lines in different colors
+    FIXED: Handle contourf collections properly
     """
     if model_name not in masks_dict:
         raise ValueError(f"Model '{model_name}' not found in masks dictionary")
@@ -691,14 +762,28 @@ def plot_combined_regions_mask(masks_dict, model_name, figsize=(12, 8), central_
     first_mask = model_masks[regions[0]]
     combined_data = np.zeros(first_mask.shape, dtype=int)
     
-    # Assign unique values to each region
-    for idx, region_name in enumerate(regions):
-        mask = model_masks[region_name]
-        combined_data = np.where(mask.values, idx + 1, combined_data)
+    # Define priority order for base regions (excluding the overlapping equatorial Pacific sub-regions)
+    base_priority_order = [
+        'Southern_Ocean',
+        'North_Pacific_SubTropics', 'North_Pacific_MiddleLats', 'South_Pacific_SubTropics',
+        'North_Atlantic_SubTropics', 'North_Atlantic_MiddleLats', 'South_Atlantic_SubTropics', 
+        'Indian_NorthSubTropics', 'Indian_SouthSubTropics',
+        'Pacific_Equatorial', 'Atlantic_Equatorial', 'Indian_Equatorial',
+        'Mediterranean_Sea'
+    ]
     
-    # Create colormap for all regions
-    colors = [region_colors.get(region, 'gray') for region in regions]
-    cmap = ListedColormap(colors)
+    # Filter to only include base regions that actually exist for this model
+    available_base_regions = [r for r in base_priority_order if r in regions]
+    
+    for idx, region_name in enumerate(available_base_regions):
+        mask = model_masks[region_name]
+        # Only assign this region where no previous region has been assigned
+        region_pixels = mask.values & (combined_data == 0)
+        combined_data[region_pixels] = idx + 1
+    
+    # Create colormap for base regions
+    base_colors = [region_colors.get(region, 'gray') for region in available_base_regions]
+    cmap = ListedColormap(['white'] + base_colors)
     
     # Get coordinates
     if hasattr(first_mask, 'lat') and hasattr(first_mask, 'lon'):
@@ -709,11 +794,69 @@ def plot_combined_regions_mask(masks_dict, model_name, figsize=(12, 8), central_
     else:
         lon_grid, lat_grid = np.meshgrid(np.arange(first_mask.shape[1]), np.arange(first_mask.shape[0]))
     
-    # Plot combined data
+    # Plot base regions
     im = ax.pcolormesh(lon_grid, lat_grid, combined_data,
                       cmap=cmap,
-                      vmin=0.5, vmax=len(regions) + 0.5,
+                      vmin=0, vmax=len(available_base_regions) + 0.5,
                       transform=ccrs.PlateCarree())
+    
+    # Overlay Western and Eastern Equatorial Pacific with hashed patterns and different colors
+    hatch_patterns = {
+        'Western_Equatorial_Pacific': '////',
+        'Eastern_Equatorial_Pacific': '\\\\\\\\'
+    }
+    
+    # Define specific colors for the hatch lines (different from the base colors)
+    hatch_colors = {
+        'Western_Equatorial_Pacific': 'red',    # Red hatch lines for Western
+        'Eastern_Equatorial_Pacific': 'blue'    # Blue hatch lines for Eastern
+    }
+    
+    for region_name, hatch_pattern in hatch_patterns.items():
+        if region_name in model_masks:
+            mask = model_masks[region_name]
+            mask_data = mask.values if hasattr(mask, 'values') else mask
+            
+            # Create a contour for the hashed region
+            if mask_data.any():  # Only plot if there are True values
+                # Create a masked array for contouring
+                contour_data = np.where(mask_data, 1, 0).astype(float)
+                
+                try:
+                    # Use contourf to create the hashed pattern
+                    contourf = ax.contourf(lon_grid, lat_grid, contour_data, 
+                                          levels=[0.5, 1.5], 
+                                          colors='none',  # No fill color
+                                          hatches=[hatch_pattern],
+                                          transform=ccrs.PlateCarree(),
+                                          alpha=0)
+                    
+                    # Set the edge color for the hatch - use the specific hatch color
+                    hatch_color = hatch_colors.get(region_name, 'gray')
+                    
+                    # Handle different return types
+                    if hasattr(contourf, 'collections'):
+                        # Standard matplotlib contourf
+                        for collection in contourf.collections:
+                            collection.set_edgecolor(hatch_color)
+                            collection.set_linewidth(0.8)  # Slightly thicker for visibility
+                    elif hasattr(contourf, '__iter__'):
+                        # Some versions return an iterable of collections
+                        for collection in contourf:
+                            if hasattr(collection, 'set_edgecolor'):
+                                collection.set_edgecolor(hatch_color)
+                                collection.set_linewidth(0.8)
+                    else:
+                        # Try to access _collections for GeoContourSet objects
+                        try:
+                            for collection in contourf._collections:
+                                collection.set_edgecolor(hatch_color)
+                                collection.set_linewidth(0.8)
+                        except AttributeError:
+                            print(f"Warning: Could not set hatch properties for {region_name}")
+                            
+                except Exception as e:
+                    print(f"Warning: Could not create hatched pattern for {region_name}: {e}")
     
     # Add map features
     ax.coastlines(linewidth=0.8, color='black')
@@ -722,11 +865,22 @@ def plot_combined_regions_mask(masks_dict, model_name, figsize=(12, 8), central_
     ax.set_global()
     ax.set_extent([-180, 180, -60, 70], crs=ccrs.PlateCarree())
     
-    # Create legend
-    legend_patches = []
-    for region_name, color in zip(regions, colors):
+    # Create legend (include "No Region" for background and hashed regions)
+    legend_patches = [mpatches.Patch(color='white', label='No Region')]
+    
+    # Add base regions
+    for region_name, color in zip(available_base_regions, base_colors):
         patch = mpatches.Patch(color=color, label=region_name.replace('_', ' ').title())
         legend_patches.append(patch)
+    
+    # Add hashed regions for equatorial Pacific sub-regions with their specific hatch colors
+    for region_name, hatch_pattern in hatch_patterns.items():
+        if region_name in regions:
+            hatch_color = hatch_colors.get(region_name, 'gray')
+            # Use the hatch color for the facecolor in the legend
+            patch = mpatches.Patch(facecolor=hatch_color, hatch=hatch_pattern, 
+                                 label=region_name.replace('_', ' ').title())
+            legend_patches.append(patch)
     
     ax.legend(handles=legend_patches, 
               loc='center left', 
@@ -735,7 +889,8 @@ def plot_combined_regions_mask(masks_dict, model_name, figsize=(12, 8), central_
               fancybox=True,
               shadow=True)
     
-    ax.set_title(f'Combined Oceanic Regions - {model_name}', fontsize=14, pad=20)
+    ax.set_title(f'Extremes Combined Oceanic Regions - {model_name}\n(Western/Eastern Equatorial Pacific shown with colored hashes)', 
+                 fontsize=14, pad=20)
     
     plt.tight_layout()
     
@@ -761,12 +916,6 @@ def quick_visualize_masks(masks_dict, model_name=None):
     plt.show()
     
     return fig1, fig2
-
-
-
-
-
-
 
 # ===================================================================================
 # EXTREME EVENT FREQUENCY ANALYSIS (UPDATED FOR MODEL-SPECIFIC MASKS)
@@ -903,12 +1052,8 @@ def compute_regional_extremes(models_dict, time_dim='time', normalize=True, regi
     
     return regional_data, masks_dict
 
-
-
-
-
 def plot_regional_extremes_barchart(regional_data, figsize=(16, 10), 
-                                    cmap='tab20', title="Average Extreme Events per Year by Region and Model"):
+                                    cmap='tab20', title="Average Extreme Days per Year by Region and Model"):
     """
     Plot barchart of regional extremes for all models
     
@@ -919,7 +1064,7 @@ def plot_regional_extremes_barchart(regional_data, figsize=(16, 10),
     figsize : tuple
         Figure size
     cmap : str
-        Colormap for different regions
+        Colormap for different models
     title : str
         Plot title
     
@@ -937,8 +1082,8 @@ def plot_regional_extremes_barchart(regional_data, figsize=(16, 10),
     models = list(regional_data.keys())
     regions = list(regional_data[models[0]].keys())
     
-    # Create color map for regions
-    colors = plt.cm.get_cmap(cmap, len(regions))
+    # Create color map for MODELS (not regions)
+    colors = plt.cm.get_cmap(cmap, len(models))
     
     # Set up the plot
     fig, ax = plt.subplots(figsize=figsize)
@@ -955,11 +1100,15 @@ def plot_regional_extremes_barchart(regional_data, figsize=(16, 10),
         offset = (i - len(models)/2 + 0.5) * bar_width
         positions = x_pos + offset
         
+        # Get ONE color for this entire model (not one per region)
+        model_color = colors(i)
+        
         bars = ax.bar(positions, model_values, bar_width, 
                      label=model_name, 
                      alpha=0.8,
                      edgecolor='black',
-                     linewidth=0.5)
+                     linewidth=0.5,
+                     color=model_color)  # Single color for all bars of this model
     
     # Customize the plot
     ax.set_xlabel('Oceanic Regions', fontsize=12)
@@ -990,7 +1139,7 @@ def plot_regional_extremes_barchart(regional_data, figsize=(16, 10),
     return fig, ax
 
 def plot_regional_extremes_heatmap(regional_data, figsize=(14, 10), 
-                                   cmap='YlOrRd', title="Regional Extreme Events Heatmap"):
+                                   cmap='YlOrRd', title="Regional Extreme Days Heatmap"):
     """
     Plot heatmap of regional extremes across models
     
@@ -1129,9 +1278,6 @@ def plot_regional_comparison_single_model(regional_data, model_name,
     
     return fig, ax
 
-
-
-
 def quick_regional_extremes_analysis(models_dict, time_dim='time', plot_type='barchart', 
                                      regions=None, per_grid_cell=True, shapefile_path=None, 
                                      mask_save_dir=None, **kwargs):
@@ -1200,8 +1346,9 @@ def quick_regional_extremes_analysis(models_dict, time_dim='time', plot_type='ba
     
     return fig, ax, regional_data
 
-
-
+# =========================================================================================================================================================
+# MARINE HEATWAVES
+# =========================================================================================================================================================
 
 # ===================================================================================
 # MHW EVENT DETECTION FUNCTIONS 
@@ -1423,7 +1570,6 @@ def compute_mhw_events_for_models(models_dict, min_duration=5, max_gap=2, max_ev
     
     return mhw_events_dict
 
-
 # ===================================================================================
 # REGIONAL MHW EVENT ANALYSIS
 # ===================================================================================
@@ -1520,14 +1666,14 @@ def compute_regional_mhw_events(mhw_events_dict, masks_dict, regions=None,
     
     return regional_mhw_data
 
-
 # ===================================================================================
-# MHW EVENT PLOTTING FUNCTIONS
+# MHW EVENT PLOTTING FUNCTIONS (UPDATED WITH VMIN/VMAX)
 # ===================================================================================
 
 def plot_mhw_event_count_map(mhw_events_dict, model_name=None, figsize=(12, 8), 
                             central_longitude=180, cmap='viridis', 
-                            title_template="MHW Event Count - {}"):
+                            title_template="MHW Event Count - {}",
+                            vmin=None, vmax=None):
     """
     Plot map of MHW event counts for a model
     
@@ -1545,6 +1691,8 @@ def plot_mhw_event_count_map(mhw_events_dict, model_name=None, figsize=(12, 8),
         Colormap for event counts
     title_template : str
         Title template (will be formatted with model_name)
+    vmin, vmax : float, optional
+        Colorbar limits
     
     Returns:
     --------
@@ -1565,10 +1713,11 @@ def plot_mhw_event_count_map(mhw_events_dict, model_name=None, figsize=(12, 8),
     fig, ax = plt.subplots(figsize=figsize,
                           subplot_kw={'projection': ccrs.PlateCarree(central_longitude=central_longitude)})
     
-    # Plot event counts
+    # Plot event counts with vmin/vmax
     im = mhw_ds.event_count.plot(ax=ax, transform=ccrs.PlateCarree(),
                                 cmap=cmap, add_colorbar=True,
-                                cbar_kwargs={'label': 'Number of MHW Events'})
+                                cbar_kwargs={'label': 'Number of MHW Events'},
+                                vmin=vmin, vmax=vmax)
     
     # Add map features
     ax.coastlines(linewidth=0.8, color='black')
@@ -1588,7 +1737,8 @@ def plot_mhw_event_count_map(mhw_events_dict, model_name=None, figsize=(12, 8),
 
 def plot_mhw_avg_duration_map(mhw_events_dict, model_name=None, figsize=(12, 8),
                              central_longitude=180, cmap='plasma',
-                             title_template="Average MHW Duration - {}"):
+                             title_template="Average MHW Duration - {}",
+                             vmin=None, vmax=None):
     """
     Plot map of average MHW duration for a model
     
@@ -1606,6 +1756,8 @@ def plot_mhw_avg_duration_map(mhw_events_dict, model_name=None, figsize=(12, 8),
         Colormap for duration
     title_template : str
         Title template (will be formatted with model_name)
+    vmin, vmax : float, optional
+        Colorbar limits
     
     Returns:
     --------
@@ -1633,10 +1785,11 @@ def plot_mhw_avg_duration_map(mhw_events_dict, model_name=None, figsize=(12, 8),
     fig, ax = plt.subplots(figsize=figsize,
                           subplot_kw={'projection': ccrs.PlateCarree(central_longitude=central_longitude)})
     
-    # Plot average duration
+    # Plot average duration with vmin/vmax
     im = avg_duration.plot(ax=ax, transform=ccrs.PlateCarree(),
                           cmap=cmap, add_colorbar=True,
-                          cbar_kwargs={'label': 'Average Duration (days)'})
+                          cbar_kwargs={'label': 'Average Duration (days)'},
+                          vmin=vmin, vmax=vmax)
     
     # Add map features
     ax.coastlines(linewidth=0.8, color='black')
@@ -1820,7 +1973,8 @@ def plot_regional_mhw_comparison_grid(regional_mhw_data, models=None, regions=No
 
 def quick_mhw_events_analysis(models_dict, shapefile_path=None, mask_save_dir=None,
                              min_duration=5, max_gap=2, max_events_per_cell=100,
-                             plot_maps=True, plot_regional=True):
+                             plot_maps=True, plot_regional=True, vmin_event_count=None, vmax_event_count=None,
+                             vmin_avg_duration=None, vmax_avg_duration=None):
     """
     Quick comprehensive analysis of MHW events across models and regions
     
@@ -1842,6 +1996,10 @@ def quick_mhw_events_analysis(models_dict, shapefile_path=None, mask_save_dir=No
         Whether to plot spatial maps
     plot_regional : bool
         Whether to plot regional comparisons
+    vmin_event_count, vmax_event_count : float, optional
+        Colorbar limits for event count maps
+    vmin_avg_duration, vmax_avg_duration : float, optional
+        Colorbar limits for average duration maps
     
     Returns:
     --------
@@ -1877,12 +2035,14 @@ def quick_mhw_events_analysis(models_dict, shapefile_path=None, mask_save_dir=No
     if plot_maps:
         print("\nCREATING SPATIAL MAPS...")
         for model_name in mhw_events_dict.keys():
-            # Event count map
-            fig1, ax1 = plot_mhw_event_count_map(mhw_events_dict, model_name)
+            # Event count map with vmin/vmax
+            fig1, ax1 = plot_mhw_event_count_map(mhw_events_dict, model_name, 
+                                                vmin=vmin_event_count, vmax=vmax_event_count)
             plt.show()
             
-            # Average duration map
-            fig2, ax2 = plot_mhw_avg_duration_map(mhw_events_dict, model_name)
+            # Average duration map with vmin/vmax
+            fig2, ax2 = plot_mhw_avg_duration_map(mhw_events_dict, model_name,
+                                                 vmin=vmin_avg_duration, vmax=vmax_avg_duration)
             plt.show()
     
     if plot_regional:
@@ -1897,7 +2057,6 @@ def quick_mhw_events_analysis(models_dict, shapefile_path=None, mask_save_dir=No
         plt.show()
     
     return mhw_events_dict, regional_mhw_data, masks_dict
-
 
 def selective_mhw_analysis(models_dict, plots_to_show=['regional_summary'], **kwargs):
     """
@@ -1931,6 +2090,12 @@ def selective_mhw_analysis(models_dict, plots_to_show=['regional_summary'], **kw
     print("=" * 50)
     print(f"Plots to show: {plots_to_show}")
     
+    # Extract vmin/vmax parameters for maps
+    vmin_event_count = kwargs.pop('vmin_event_count', None)
+    vmax_event_count = kwargs.pop('vmax_event_count', None)
+    vmin_avg_duration = kwargs.pop('vmin_avg_duration', None)
+    vmax_avg_duration = kwargs.pop('vmax_avg_duration', None)
+    
     # First run the analysis but suppress all automatic plotting
     mhw_events_dict, regional_mhw_data, masks_dict = quick_mhw_events_analysis(
         models_dict,
@@ -1943,13 +2108,15 @@ def selective_mhw_analysis(models_dict, plots_to_show=['regional_summary'], **kw
     if 'events_map' in plots_to_show:
         print("\nCreating MHW event count maps...")
         for model_name in mhw_events_dict.keys():
-            fig, ax = plot_mhw_event_count_map(mhw_events_dict, model_name)
+            fig, ax = plot_mhw_event_count_map(mhw_events_dict, model_name,
+                                              vmin=vmin_event_count, vmax=vmax_event_count)
             plt.show()
     
     if 'duration_map' in plots_to_show:
         print("\nCreating MHW average duration maps...")
         for model_name in mhw_events_dict.keys():
-            fig, ax = plot_mhw_avg_duration_map(mhw_events_dict, model_name)
+            fig, ax = plot_mhw_avg_duration_map(mhw_events_dict, model_name,
+                                               vmin=vmin_avg_duration, vmax=vmax_avg_duration)
             plt.show()
     
     if 'regional_events' in plots_to_show:
@@ -1980,21 +2147,15 @@ def selective_mhw_analysis(models_dict, plots_to_show=['regional_summary'], **kw
     
     return mhw_events_dict, regional_mhw_data, masks_dict
 
-
-
-
-
-
 # ==========================================================================================================================
-# INTENSITY
+# INTENSITY -> MAGNITUDE FUNCTIONS (RENAMED AND UPDATED)
 # ==========================================================================================================================
 
-
-def compute_event_intensity_vectorized(mhw_events_ds, ssta_data, time_dim='time'):
+def compute_event_magnitude_vectorized(mhw_events_ds, ssta_data, time_dim='time'):
     """
-    Vectorized computation of MHW intensity using Dask and xarray operations
+    Vectorized computation of MHW magnitude using Dask and xarray operations
     """
-    print("Computing MHW intensity statistics (vectorized Dask approach)...")
+    print("Computing MHW magnitude statistics (vectorized Dask approach)...")
     
     # Extract coordinates
     event_start_times = mhw_events_ds.event_start_times
@@ -2005,15 +2166,15 @@ def compute_event_intensity_vectorized(mhw_events_ds, ssta_data, time_dim='time'
     n_lats, n_lons, n_events = len(mhw_events_ds.lat), len(mhw_events_ds.lon), len(mhw_events_ds.event_index)
     print(f"Processing grid: {n_lats} x {n_lons} x {n_events} events")
     
-    def compute_intensity_for_cell(cell_starts, cell_ends, cell_ssta):
+    def compute_magnitude_for_cell(cell_starts, cell_ends, cell_ssta):
         """
-        Compute intensity for all events in a single grid cell
+        Compute magnitude for all events in a single grid cell
         """
         # Initialize output arrays
         n_events = len(cell_starts)
-        avg_intensity = np.full(n_events, np.nan)
-        max_intensity = np.full(n_events, np.nan)
-        median_intensity = np.full(n_events, np.nan)
+        avg_magnitude = np.full(n_events, np.nan)
+        max_magnitude = np.full(n_events, np.nan)
+        median_magnitude = np.full(n_events, np.nan)
         
         for evt_idx in range(n_events):
             start_time = cell_starts[evt_idx]
@@ -2032,17 +2193,17 @@ def compute_event_intensity_vectorized(mhw_events_ds, ssta_data, time_dim='time'
                 event_ssta = cell_ssta[time_indices]
                 
                 if len(event_ssta) > 0 and not np.all(np.isnan(event_ssta)):
-                    avg_intensity[evt_idx] = np.nanmean(event_ssta)
-                    max_intensity[evt_idx] = np.nanmax(event_ssta)
-                    median_intensity[evt_idx] = np.nanmedian(event_ssta)
+                    avg_magnitude[evt_idx] = np.nanmean(event_ssta)
+                    max_magnitude[evt_idx] = np.nanmax(event_ssta)
+                    median_magnitude[evt_idx] = np.nanmedian(event_ssta)
         
-        return avg_intensity, max_intensity, median_intensity
+        return avg_magnitude, max_magnitude, median_magnitude
     
     # Use xr.apply_ufunc for vectorized computation
     print("Applying vectorized computation...")
     
     results = xr.apply_ufunc(
-        compute_intensity_for_cell,
+        compute_magnitude_for_cell,
         event_start_times,      # (lat, lon, event_index)
         event_end_times,        # (lat, lon, event_index)  
         ssta_data,              # (time, lat, lon)
@@ -2055,40 +2216,40 @@ def compute_event_intensity_vectorized(mhw_events_ds, ssta_data, time_dim='time'
     )
     
     # Extract results
-    avg_intensity, max_intensity, median_intensity = results
+    avg_magnitude, max_magnitude, median_magnitude = results
     
     # Create output dataset
-    intensity_ds = xr.Dataset({
-        'avg_intensity': avg_intensity,
-        'max_intensity': max_intensity,
-        'median_intensity': median_intensity
+    magnitude_ds = xr.Dataset({
+        'avg_magnitude': avg_magnitude,
+        'max_magnitude': max_magnitude,
+        'median_magnitude': median_magnitude
     })
     
     # Add attributes
-    intensity_ds.avg_intensity.attrs = {
-        'long_name': 'Average MHW intensity',
+    magnitude_ds.avg_magnitude.attrs = {
+        'long_name': 'Average MHW magnitude',
         'units': 'degC',
         'description': 'Average SSTA during MHW events'
     }
-    intensity_ds.max_intensity.attrs = {
-        'long_name': 'Maximum MHW intensity', 
+    magnitude_ds.max_magnitude.attrs = {
+        'long_name': 'Maximum MHW magnitude', 
         'units': 'degC',
         'description': 'Maximum SSTA during MHW events'
     }
-    intensity_ds.median_intensity.attrs = {
-        'long_name': 'Median MHW intensity',
+    magnitude_ds.median_magnitude.attrs = {
+        'long_name': 'Median MHW magnitude',
         'units': 'degC', 
         'description': 'Median SSTA during MHW events'
     }
     
-    return intensity_ds
+    return magnitude_ds
 
 # Even more optimized version using map_blocks
-def compute_event_intensity_map_blocks(mhw_events_ds, ssta_data, time_dim='time'):
+def compute_event_magnitude_map_blocks(mhw_events_ds, ssta_data, time_dim='time'):
     """
     Optimized version using Dask's map_blocks for better parallelization
     """
-    print("Computing MHW intensity (map_blocks optimized)...")
+    print("Computing MHW magnitude (map_blocks optimized)...")
     
     # Ensure Dask chunks
     event_start_times = mhw_events_ds.event_start_times.chunk({'lat': 50, 'lon': 50, 'event_index': 50})
@@ -2098,9 +2259,9 @@ def compute_event_intensity_map_blocks(mhw_events_ds, ssta_data, time_dim='time'
     ssta_times = ssta_data[time_dim].values
     n_events = len(mhw_events_ds.event_index)
     
-    def compute_intensity_block(starts_block, ends_block, ssta_block):
+    def compute_magnitude_block(starts_block, ends_block, ssta_block):
         """
-        Compute intensity for a block of data
+        Compute magnitude for a block of data
         """
         block_shape = starts_block.shape
         avg_result = np.full(block_shape, np.nan)
@@ -2137,8 +2298,8 @@ def compute_event_intensity_map_blocks(mhw_events_ds, ssta_data, time_dim='time'
     print("Processing with Dask map_blocks...")
     
     # Use map_blocks to compute all three metrics at once
-    intensity_blocks = da.map_blocks(
-        compute_intensity_block,
+    magnitude_blocks = da.map_blocks(
+        compute_magnitude_block,
         event_start_times.data,
         event_end_times.data,
         ssta_data_chunked.data,
@@ -2148,57 +2309,57 @@ def compute_event_intensity_map_blocks(mhw_events_ds, ssta_data, time_dim='time'
     )
     
     # Split the results
-    avg_intensity_dask = intensity_blocks[..., 0]
-    max_intensity_dask = intensity_blocks[..., 1]
-    median_intensity_dask = intensity_blocks[..., 2]
+    avg_magnitude_dask = magnitude_blocks[..., 0]
+    max_magnitude_dask = magnitude_blocks[..., 1]
+    median_magnitude_dask = magnitude_blocks[..., 2]
     
     # Convert to DataArrays
-    avg_intensity = xr.DataArray(
-        avg_intensity_dask,
+    avg_magnitude = xr.DataArray(
+        avg_magnitude_dask,
         dims=event_start_times.dims,
         coords=event_start_times.coords,
-        name='avg_intensity'
+        name='avg_magnitude'
     )
     
-    max_intensity = xr.DataArray(
-        max_intensity_dask,
+    max_magnitude = xr.DataArray(
+        max_magnitude_dask,
         dims=event_start_times.dims,
         coords=event_start_times.coords,
-        name='max_intensity'
+        name='max_magnitude'
     )
     
-    median_intensity = xr.DataArray(
-        median_intensity_dask,
+    median_magnitude = xr.DataArray(
+        median_magnitude_dask,
         dims=event_start_times.dims,
         coords=event_start_times.coords,
-        name='median_intensity'
+        name='median_magnitude'
     )
     
     # Create dataset
-    intensity_ds = xr.Dataset({
-        'avg_intensity': avg_intensity,
-        'max_intensity': max_intensity,
-        'median_intensity': median_intensity
+    magnitude_ds = xr.Dataset({
+        'avg_magnitude': avg_magnitude,
+        'max_magnitude': max_magnitude,
+        'median_magnitude': median_magnitude
     })
     
     # Add attributes
-    intensity_ds.avg_intensity.attrs = {
-        'long_name': 'Average MHW intensity',
+    magnitude_ds.avg_magnitude.attrs = {
+        'long_name': 'Average MHW magnitude',
         'units': 'degC',
         'description': 'Average SSTA during MHW events'
     }
-    intensity_ds.max_intensity.attrs = {
-        'long_name': 'Maximum MHW intensity', 
+    magnitude_ds.max_magnitude.attrs = {
+        'long_name': 'Maximum MHW magnitude', 
         'units': 'degC',
         'description': 'Maximum SSTA during MHW events'
     }
-    intensity_ds.median_intensity.attrs = {
-        'long_name': 'Median MHW intensity',
+    magnitude_ds.median_magnitude.attrs = {
+        'long_name': 'Median MHW magnitude',
         'units': 'degC', 
         'description': 'Median SSTA during MHW events'
     }
     
-    return intensity_ds
+    return magnitude_ds
 
 # Test with a small subset first
 def test_vectorized_small():
@@ -2218,22 +2379,22 @@ def test_vectorized_small():
     print(f"Small subset: {len(small_lats)} x {len(small_lons)} x {len(small_events)}")
     
     # Test the vectorized approach
-    small_intensity = compute_event_intensity_vectorized(small_mhws, small_ssta)
+    small_magnitude = compute_event_magnitude_vectorized(small_mhws, small_ssta)
     
     # Check results
-    valid_avg = np.sum(~np.isnan(small_intensity.avg_intensity.values))
-    valid_max = np.sum(~np.isnan(small_intensity.max_intensity.values))
+    valid_avg = np.sum(~np.isnan(small_magnitude.avg_magnitude.values))
+    valid_max = np.sum(~np.isnan(small_magnitude.max_magnitude.values))
     
-    print(f"Small test results: {valid_avg} valid average intensities, {valid_max} valid max intensities")
+    print(f"Small test results: {valid_avg} valid average magnitudes, {valid_max} valid max magnitudes")
     
-    return small_intensity
+    return small_magnitude
 
 # Progressive scaling
-def compute_intensity_progressive(mhw_events_ds, ssta_data, batch_size=100):
+def compute_magnitude_progressive(mhw_events_ds, ssta_data, batch_size=100):
     """
     Process in batches to manage memory
     """
-    print("Computing intensity with progressive batching...")
+    print("Computing magnitude with progressive batching...")
     
     n_lats = len(mhw_events_ds.lat)
     results = []
@@ -2248,38 +2409,37 @@ def compute_intensity_progressive(mhw_events_ds, ssta_data, batch_size=100):
         batch_mhws = mhw_events_ds.isel(lat=lat_slice)
         batch_ssta = ssta_data.isel(lat=lat_slice)
         
-        batch_intensity = compute_event_intensity_vectorized(batch_mhws, batch_ssta)
-        results.append(batch_intensity)
+        batch_magnitude = compute_event_magnitude_vectorized(batch_mhws, batch_ssta)
+        results.append(batch_magnitude)
     
     # Combine results
     print("Combining results...")
-    full_intensity = xr.concat(results, dim='lat')
+    full_magnitude = xr.concat(results, dim='lat')
     
-    return full_intensity
-
+    return full_magnitude
 
 # ==========================================================================================================================================================
-## INTENSITY PLOTS (UPDATED)
+## MAGNITUDE PLOTS (UPDATED - RENAMED FROM INTENSITY TO MAGNITUDE)
 # ==========================================================================================================================================================
 
-def plot_avg_intensity_map(intensity_ds, model_name="OSTIA", figsize=(12, 8), 
+def plot_avg_magnitude_map(magnitude_ds, model_name="OSTIA", figsize=(12, 8), 
                           central_longitude=180, vmin=None, vmax=None, title=None):
     """
-    Plot map of average intensity (average of event averages per grid cell)
+    Plot map of average magnitude (average of event averages per grid cell)
     """
-    print("Plotting average intensity map...")
+    print("Plotting average magnitude map...")
     
-    # Compute mean intensity across events for each grid cell (ignore NaNs)
-    avg_intensity_2d = intensity_ds.avg_intensity.mean(dim='event_index', skipna=True)
+    # Compute mean magnitude across events for each grid cell (ignore NaNs)
+    avg_magnitude_2d = magnitude_ds.avg_magnitude.mean(dim='event_index', skipna=True)
     
     # Create figure
     fig, ax = plt.subplots(figsize=figsize, 
                           subplot_kw={'projection': ccrs.PlateCarree(central_longitude=central_longitude)})
     
     # Plot the data with vmin/vmax
-    im = avg_intensity_2d.plot(ax=ax, transform=ccrs.PlateCarree(),
+    im = avg_magnitude_2d.plot(ax=ax, transform=ccrs.PlateCarree(),
                               cmap='Reds', add_colorbar=True,
-                              cbar_kwargs={'label': 'Average Intensity (°C)',
+                              cbar_kwargs={'label': 'Average Magnitude (°C)',
                                           'shrink': 0.8},
                               vmin=vmin, vmax=vmax)
     
@@ -2292,31 +2452,31 @@ def plot_avg_intensity_map(intensity_ds, model_name="OSTIA", figsize=(12, 8),
     
     # Add title
     if title is None:
-        title = f'MHW average intensity of all average intensities - {model_name}'
+        title = f'MHW average magnitude of all average magnitudes - {model_name}'
     
     ax.set_title(title, fontsize=14, pad=20)
     
     plt.tight_layout()
     return fig, ax
 
-def plot_avg_of_max_intensity_map(intensity_ds, model_name="OSTIA", figsize=(12, 8),
+def plot_avg_of_max_magnitude_map(magnitude_ds, model_name="OSTIA", figsize=(12, 8),
                                  central_longitude=180, vmin=None, vmax=None, title=None):
     """
-    Plot map of average intensity of maximum intensities per grid cell
+    Plot map of average magnitude of maximum magnitudes per grid cell
     """
-    print("Plotting average of maximum intensities map...")
+    print("Plotting average of maximum magnitudes map...")
     
-    # Compute average of maximum intensities across events for each grid cell
-    avg_of_max_intensity_2d = intensity_ds.max_intensity.mean(dim='event_index', skipna=True)
+    # Compute average of maximum magnitudes across events for each grid cell
+    avg_of_max_magnitude_2d = magnitude_ds.max_magnitude.mean(dim='event_index', skipna=True)
     
     # Create figure
     fig, ax = plt.subplots(figsize=figsize,
                           subplot_kw={'projection': ccrs.PlateCarree(central_longitude=central_longitude)})
     
     # Plot the data with vmin/vmax
-    im = avg_of_max_intensity_2d.plot(ax=ax, transform=ccrs.PlateCarree(),
+    im = avg_of_max_magnitude_2d.plot(ax=ax, transform=ccrs.PlateCarree(),
                                      cmap='Oranges', add_colorbar=True,
-                                     cbar_kwargs={'label': 'Average of Max Intensities (°C)',
+                                     cbar_kwargs={'label': 'Average of Max Magnitudes (°C)',
                                                  'shrink': 0.8},
                                      vmin=vmin, vmax=vmax)
     
@@ -2329,31 +2489,31 @@ def plot_avg_of_max_intensity_map(intensity_ds, model_name="OSTIA", figsize=(12,
     
     # Add title
     if title is None:
-        title = f'MHW average intensity of all maximum intensities - {model_name}'
+        title = f'MHW average magnitude of all maximum magnitudes - {model_name}'
     
     ax.set_title(title, fontsize=14, pad=20)
     
     plt.tight_layout()
     return fig, ax
 
-def plot_max_intensity_map(intensity_ds, model_name="OSTIA", figsize=(12, 8),
+def plot_max_magnitude_map(magnitude_ds, model_name="OSTIA", figsize=(12, 8),
                           central_longitude=180, vmin=None, vmax=None, title=None):
     """
-    Plot map of maximum intensity (max of event maxima per grid cell)
+    Plot map of maximum magnitude (max of event maxima per grid cell)
     """
-    print("Plotting maximum intensity map...")
+    print("Plotting maximum magnitude map...")
     
-    # Compute maximum intensity across events for each grid cell (ignore NaNs)
-    max_intensity_2d = intensity_ds.max_intensity.max(dim='event_index', skipna=True)
+    # Compute maximum magnitude across events for each grid cell (ignore NaNs)
+    max_magnitude_2d = magnitude_ds.max_magnitude.max(dim='event_index', skipna=True)
     
     # Create figure
     fig, ax = plt.subplots(figsize=figsize,
                           subplot_kw={'projection': ccrs.PlateCarree(central_longitude=central_longitude)})
     
     # Plot the data with vmin/vmax
-    im = max_intensity_2d.plot(ax=ax, transform=ccrs.PlateCarree(),
+    im = max_magnitude_2d.plot(ax=ax, transform=ccrs.PlateCarree(),
                               cmap='OrRd', add_colorbar=True,
-                              cbar_kwargs={'label': 'Maximum Intensity (°C)',
+                              cbar_kwargs={'label': 'Maximum Magnitude (°C)',
                                           'shrink': 0.8},
                               vmin=vmin, vmax=vmax)
     
@@ -2366,7 +2526,7 @@ def plot_max_intensity_map(intensity_ds, model_name="OSTIA", figsize=(12, 8),
     
     # Add title
     if title is None:
-        title = f'MHW max intensity of all max intensities - {model_name}'
+        title = f'MHW max magnitude of all max magnitudes - {model_name}'
     
     ax.set_title(title, fontsize=14, pad=20)
     
@@ -2374,28 +2534,28 @@ def plot_max_intensity_map(intensity_ds, model_name="OSTIA", figsize=(12, 8),
     return fig, ax
 
 # Multi-model plotting functions
-def plot_multi_model_intensity_maps(intensity_dict, plot_type='avg_intensity', 
+def plot_multi_model_magnitude_maps(magnitude_dict, plot_type='avg_magnitude', 
                                    figsize=(15, 10), central_longitude=180, 
                                    vmin=None, vmax=None, titles=None):
     """
-    Plot intensity maps for multiple models
+    Plot magnitude maps for multiple models
     
     Parameters:
     -----------
-    intensity_dict : dict
-        Dictionary with model names as keys and intensity datasets as values
+    magnitude_dict : dict
+        Dictionary with model names as keys and magnitude datasets as values
     plot_type : str
-        Type of plot: 'avg_intensity', 'avg_of_max_intensity', or 'max_intensity'
+        Type of plot: 'avg_magnitude', 'avg_of_max_magnitude', or 'max_magnitude'
     figsize : tuple
         Figure size
     central_longitude : float
         Central longitude for map projection
     vmin, vmax : float
-        Colorbar limits
+        Colorbar limits (same for all models)
     titles : dict
         Dictionary with model names as keys and custom titles as values
     """
-    models = list(intensity_dict.keys())
+    models = list(magnitude_dict.keys())
     n_models = len(models)
     
     # Calculate grid size
@@ -2419,7 +2579,7 @@ def plot_multi_model_intensity_maps(intensity_dict, plot_type='avg_intensity',
         col = idx % n_cols
         ax = axes[row, col]
         
-        intensity_ds = intensity_dict[model_name]
+        magnitude_ds = magnitude_dict[model_name]
         
         # Get custom title if provided
         if titles and model_name in titles:
@@ -2428,22 +2588,22 @@ def plot_multi_model_intensity_maps(intensity_dict, plot_type='avg_intensity',
             title = None
         
         # Select the appropriate plot type
-        if plot_type == 'avg_intensity':
-            data_2d = intensity_ds.avg_intensity.mean(dim='event_index', skipna=True)
+        if plot_type == 'avg_magnitude':
+            data_2d = magnitude_ds.avg_magnitude.mean(dim='event_index', skipna=True)
             cmap = 'Reds'
-            default_title = f'Avg Intensity - {model_name}'
-        elif plot_type == 'avg_of_max_intensity':
-            data_2d = intensity_ds.max_intensity.mean(dim='event_index', skipna=True)
+            default_title = f'Avg Magnitude - {model_name}'
+        elif plot_type == 'avg_of_max_magnitude':
+            data_2d = magnitude_ds.max_magnitude.mean(dim='event_index', skipna=True)
             cmap = 'Oranges'
-            default_title = f'Avg of Max Intensity - {model_name}'
-        elif plot_type == 'max_intensity':
-            data_2d = intensity_ds.max_intensity.max(dim='event_index', skipna=True)
+            default_title = f'Avg of Max Magnitude - {model_name}'
+        elif plot_type == 'max_magnitude':
+            data_2d = magnitude_ds.max_magnitude.max(dim='event_index', skipna=True)
             cmap = 'OrRd'
-            default_title = f'Max Intensity - {model_name}'
+            default_title = f'Max Magnitude - {model_name}'
         else:
-            raise ValueError("plot_type must be 'avg_intensity', 'avg_of_max_intensity', or 'max_intensity'")
+            raise ValueError("plot_type must be 'avg_magnitude', 'avg_of_max_magnitude', or 'max_magnitude'")
         
-        # Plot
+        # Plot with same vmin/vmax for all models
         im = data_2d.plot(ax=ax, transform=ccrs.PlateCarree(),
                          cmap=cmap, add_colorbar=False,
                          vmin=vmin, vmax=vmax)
@@ -2464,7 +2624,7 @@ def plot_multi_model_intensity_maps(intensity_dict, plot_type='avg_intensity',
     plt.tight_layout()
     cbar = fig.colorbar(im, ax=axes.ravel().tolist(), 
                        orientation='horizontal', pad=0.05, shrink=0.8)
-    cbar.set_label('Intensity (°C)', fontsize=12)
+    cbar.set_label('Magnitude (°C)', fontsize=12)
     
     # Hide unused subplots
     for idx in range(len(models), n_rows * n_cols):
@@ -2474,37 +2634,37 @@ def plot_multi_model_intensity_maps(intensity_dict, plot_type='avg_intensity',
     
     return fig, axes
 
-# 3. Scatter plots of duration vs intensity metrics
-def plot_duration_intensity_scatter(mhw_events_ds, intensity_ds, model_name="OSTIA", 
+# 3. Scatter plots of duration vs magnitude metrics
+def plot_duration_magnitude_scatter(mhw_events_ds, magnitude_ds, model_name="OSTIA", 
                                    max_points=10000, figsize=(15, 5)):
     """
-    Plot scatter plots of duration vs intensity metrics
+    Plot scatter plots of duration vs magnitude metrics
     """
-    print("Creating duration vs intensity scatter plots...")
+    print("Creating duration vs magnitude scatter plots...")
     
-    # Extract duration and intensity data
+    # Extract duration and magnitude data
     durations = mhw_events_ds.event_durations
-    avg_intensity = intensity_ds.avg_intensity
-    max_intensity = intensity_ds.max_intensity
-    median_intensity = intensity_ds.median_intensity
+    avg_magnitude = magnitude_ds.avg_magnitude
+    max_magnitude = magnitude_ds.max_magnitude
+    median_magnitude = magnitude_ds.median_magnitude
     
     # Flatten the arrays and remove NaN values
     print("  Flattening data and removing NaNs...")
     
     # Convert to numpy arrays (compute if Dask)
     durations_flat = durations.values.flatten()
-    avg_intensity_flat = avg_intensity.values.flatten()
-    max_intensity_flat = max_intensity.values.flatten()
-    median_intensity_flat = median_intensity.values.flatten()
+    avg_magnitude_flat = avg_magnitude.values.flatten()
+    max_magnitude_flat = max_magnitude.values.flatten()
+    median_magnitude_flat = median_magnitude.values.flatten()
     
     # Remove NaN values and invalid durations
     valid_mask = (~np.isnan(durations_flat)) & (durations_flat > 0) & \
-                 (~np.isnan(avg_intensity_flat)) & (~np.isnan(max_intensity_flat))
+                 (~np.isnan(avg_magnitude_flat)) & (~np.isnan(max_magnitude_flat))
     
     durations_valid = durations_flat[valid_mask]
-    avg_intensity_valid = avg_intensity_flat[valid_mask]
-    max_intensity_valid = max_intensity_flat[valid_mask]
-    median_intensity_valid = median_intensity_flat[valid_mask]
+    avg_magnitude_valid = avg_magnitude_flat[valid_mask]
+    max_magnitude_valid = max_magnitude_flat[valid_mask]
+    median_magnitude_valid = median_magnitude_flat[valid_mask]
     
     print(f"  Valid data points: {len(durations_valid)}")
     
@@ -2513,83 +2673,100 @@ def plot_duration_intensity_scatter(mhw_events_ds, intensity_ds, model_name="OST
         print(f"  Sampling {max_points} points for clarity...")
         indices = np.random.choice(len(durations_valid), max_points, replace=False)
         durations_valid = durations_valid[indices]
-        avg_intensity_valid = avg_intensity_valid[indices]
-        max_intensity_valid = max_intensity_valid[indices]
-        median_intensity_valid = median_intensity_valid[indices]
+        avg_magnitude_valid = avg_magnitude_valid[indices]
+        max_magnitude_valid = max_magnitude_valid[indices]
+        median_magnitude_valid = median_magnitude_valid[indices]
     
     # Create subplots
     fig, axes = plt.subplots(1, 3, figsize=figsize)
     
-    # Plot 1: Duration vs Average Intensity
-    sc1 = axes[0].scatter(durations_valid, avg_intensity_valid, alpha=0.6, s=1, c='blue')
+    # Plot 1: Duration vs Average Magnitude
+    sc1 = axes[0].scatter(durations_valid, avg_magnitude_valid, alpha=0.6, s=1, c='blue')
     axes[0].set_xlabel('Duration (days)')
-    axes[0].set_ylabel('Average Intensity (°C)')
-    axes[0].set_title('Duration vs Average Intensity')
+    axes[0].set_ylabel('Average Magnitude (°C)')
+    axes[0].set_title('Duration vs Average Magnitude')
     axes[0].grid(True, alpha=0.3)
     
     # Add correlation coefficient
-    corr_avg = np.corrcoef(durations_valid, avg_intensity_valid)[0,1]
+    corr_avg = np.corrcoef(durations_valid, avg_magnitude_valid)[0,1]
     axes[0].text(0.05, 0.95, f'Correlation: {corr_avg:.3f}', 
                 transform=axes[0].transAxes, bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    # Plot 2: Duration vs Maximum Intensity
-    sc2 = axes[1].scatter(durations_valid, max_intensity_valid, alpha=0.6, s=1, c='red')
+    # Plot 2: Duration vs Maximum Magnitude
+    sc2 = axes[1].scatter(durations_valid, max_magnitude_valid, alpha=0.6, s=1, c='red')
     axes[1].set_xlabel('Duration (days)')
-    axes[1].set_ylabel('Maximum Intensity (°C)')
-    axes[1].set_title('Duration vs Maximum Intensity')
+    axes[1].set_ylabel('Maximum Magnitude (°C)')
+    axes[1].set_title('Duration vs Maximum Magnitude')
     axes[1].grid(True, alpha=0.3)
     
     # Add correlation coefficient
-    corr_max = np.corrcoef(durations_valid, max_intensity_valid)[0,1]
+    corr_max = np.corrcoef(durations_valid, max_magnitude_valid)[0,1]
     axes[1].text(0.05, 0.95, f'Correlation: {corr_max:.3f}', 
                 transform=axes[1].transAxes, bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    # Plot 3: Duration vs Median Intensity
-    sc3 = axes[2].scatter(durations_valid, median_intensity_valid, alpha=0.6, s=1, c='green')
+    # Plot 3: Duration vs Median Magnitude
+    sc3 = axes[2].scatter(durations_valid, median_magnitude_valid, alpha=0.6, s=1, c='green')
     axes[2].set_xlabel('Duration (days)')
-    axes[2].set_ylabel('Median Intensity (°C)')
-    axes[2].set_title('Duration vs Median Intensity')
+    axes[2].set_ylabel('Median Magnitude (°C)')
+    axes[2].set_title('Duration vs Median Magnitude')
     axes[2].grid(True, alpha=0.3)
     
     # Add correlation coefficient
-    corr_median = np.corrcoef(durations_valid, median_intensity_valid)[0,1]
+    corr_median = np.corrcoef(durations_valid, median_magnitude_valid)[0,1]
     axes[2].text(0.05, 0.95, f'Correlation: {corr_median:.3f}', 
                 transform=axes[2].transAxes, bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    fig.suptitle(f'MHW Duration vs Intensity Relationships - {model_name}\n'
+    fig.suptitle(f'MHW Duration vs Magnitude Relationships - {model_name}\n'
                 f'{len(durations_valid)} events', fontsize=16, y=1.02)
     
     plt.tight_layout()
     return fig, axes
 
 # All-in-one function to create all plots (updated for multiple models)
-def create_all_intensity_plots(mhw_events_dict, intensity_dict, model_names=None):
+def create_all_magnitude_plots(mhw_events_dict, magnitude_dict, model_names=None,
+                              vmin_avg_magnitude=None, vmax_avg_magnitude=None,
+                              vmin_avg_of_max_magnitude=None, vmax_avg_of_max_magnitude=None,
+                              vmin_max_magnitude=None, vmax_max_magnitude=None):
     """
-    Create all intensity visualization plots for multiple models
+    Create all magnitude visualization plots for multiple models
+    
+    Parameters:
+    -----------
+    mhw_events_dict : dict
+        Dictionary with MHW event datasets
+    magnitude_dict : dict
+        Dictionary with magnitude datasets
+    model_names : list, optional
+        List of model names to plot
+    vmin_*, vmax_* : float, optional
+        Colorbar limits for different magnitude plots
     """
     if model_names is None:
-        model_names = list(intensity_dict.keys())
+        model_names = list(magnitude_dict.keys())
     
     for model_name in model_names:
-        print(f"Creating all intensity plots for {model_name}...")
+        print(f"Creating all magnitude plots for {model_name}...")
         
-        if model_name not in mhw_events_dict or model_name not in intensity_dict:
+        if model_name not in mhw_events_dict or model_name not in magnitude_dict:
             print(f"  Warning: Data not found for {model_name}, skipping...")
             continue
         
-        # 1. Average intensity map
-        fig1, ax1 = plot_avg_intensity_map(intensity_dict[model_name], model_name)
+        # 1. Average magnitude map
+        fig1, ax1 = plot_avg_magnitude_map(magnitude_dict[model_name], model_name,
+                                          vmin=vmin_avg_magnitude, vmax=vmax_avg_magnitude)
         plt.show()
         
-        # 2. Average of maximum intensities map
-        fig2, ax2 = plot_avg_of_max_intensity_map(intensity_dict[model_name], model_name)
+        # 2. Average of maximum magnitudes map
+        fig2, ax2 = plot_avg_of_max_magnitude_map(magnitude_dict[model_name], model_name,
+                                                 vmin=vmin_avg_of_max_magnitude, vmax=vmax_avg_of_max_magnitude)
         plt.show()
         
-        # 3. Maximum intensity map  
-        fig3, ax3 = plot_max_intensity_map(intensity_dict[model_name], model_name)
+        # 3. Maximum magnitude map  
+        fig3, ax3 = plot_max_magnitude_map(magnitude_dict[model_name], model_name,
+                                          vmin=vmin_max_magnitude, vmax=vmax_max_magnitude)
         plt.show()
         
-        # 4. Duration vs intensity scatter plots
-        fig4, axes4 = plot_duration_intensity_scatter(mhw_events_dict[model_name], 
-                                                     intensity_dict[model_name], model_name)
+        # 4. Duration vs magnitude scatter plots
+        fig4, axes4 = plot_duration_magnitude_scatter(mhw_events_dict[model_name], 
+                                                     magnitude_dict[model_name], model_name)
         plt.show()
