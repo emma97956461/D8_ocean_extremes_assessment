@@ -393,8 +393,8 @@ def create_pdf_specific_shapefile_mask(data_array, model_name=None, shapefile_pa
         # Now split at 150°W = 210° in 0-360 system
         # Western Equatorial Pacific: longitudes > 210° (150°W to 180°E)
         # Eastern Equatorial Pacific: longitudes <= 210° (120°E to 150°W)
-        western_mask_360 = pacific_eq_360 & (pacific_eq_360.lon > 210)
-        eastern_mask_360 = pacific_eq_360 & (pacific_eq_360.lon <= 210)
+        eastern_mask_360 = pacific_eq_360 & (pacific_eq_360.lon > 210)
+        western_mask_360 = pacific_eq_360 & (pacific_eq_360.lon <= 210)
         
         # Convert back to -180-180 system
         western_mask = western_mask_360.copy()

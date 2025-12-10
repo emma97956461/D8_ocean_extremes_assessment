@@ -397,8 +397,8 @@ def create_model_specific_shapefile_mask(data_array, model_name=None, shapefile_
         # Now split at 150°W = 210° in 0-360 system
         # Western Equatorial Pacific: longitudes > 210° (150°W to 180°E)
         # Eastern Equatorial Pacific: longitudes <= 210° (120°E to 150°W)
-        western_mask_360 = pacific_eq_360 & (pacific_eq_360.lon > 210)
-        eastern_mask_360 = pacific_eq_360 & (pacific_eq_360.lon <= 210)
+        eastern_mask_360 = pacific_eq_360 & (pacific_eq_360.lon > 210)
+        western_mask_360 = pacific_eq_360 & (pacific_eq_360.lon <= 210)
         
         # Convert back to -180-180 system
         western_mask = western_mask_360.copy()
@@ -3306,6 +3306,7 @@ def plot_point_model_comparison_subplots(point, models_data_mapping, buffer_days
                                         time_slice=None, figsize=(18, 5)):
     """
     Plot a single point for all models in subplots (side-by-side comparison)
+    FIXED: Each subplot now has its own independent y-axis for proper visualization
     
     Parameters:
     -----------
@@ -3334,8 +3335,8 @@ def plot_point_model_comparison_subplots(point, models_data_mapping, buffer_days
     models = list(models_data_mapping.keys())
     n_models = len(models)
     
-    # Create figure with subplots
-    fig, axes = plt.subplots(1, n_models, figsize=figsize, sharey=True)
+    # Create figure with subplots - DO NOT share y-axis
+    fig, axes = plt.subplots(1, n_models, figsize=figsize, sharey=False)
     
     # Handle case when there's only one model
     if n_models == 1:
@@ -3424,25 +3425,25 @@ def plot_point_model_comparison_subplots(point, models_data_mapping, buffer_days
             # Add grid
             ax.grid(True, alpha=0.3)
             
-            # Set y-label for first subplot only
-            if idx == 0:
-                ax.set_ylabel('Temperature (°C)', fontsize=11)
+            # Set y-label for each subplot (not just first one)
+            ax.set_ylabel('Temperature (°C)', fontsize=11)
             
-            # Add x-label for bottom subplots
+            # Add x-label for each subplot
             ax.set_xlabel('Date', fontsize=10)
             
-            # Set y-limits to match the first plot for consistency
-            if idx == 0 and ax_single.get_ylim():
+            # CRITICAL FIX: Set y-limits for EACH subplot independently
+            if ax_single.get_ylim():
                 ylim = ax_single.get_ylim()
-            elif idx > 0:
-                ax.set_ylim(ylim)
+                # Add a small padding to y-axis for better visualization
+                y_padding = (ylim[1] - ylim[0]) * 0.05
+                ax.set_ylim(ylim[0] - y_padding, ylim[1] + y_padding)
             
             # Close the single figure to save memory
             plt.close(fig_single)
             
             events_data_list.append(events_data)
             
-            print(f"  {model_name}: {event_count} events")
+            print(f"  {model_name}: {event_count} events (temp range: {ylim[0]:.1f} to {ylim[1]:.1f}°C)")
             
         except Exception as e:
             # If there's an error, show error message in subplot
@@ -3554,6 +3555,12 @@ def plot_all_points_model_comparisons(points_of_interest, models_data_mapping,
                     durations = events_data.event_durations[:event_count].values
                     point_summary[f'{model_name}_avg_duration'] = np.mean(durations)
                     point_summary[f'{model_name}_max_duration'] = np.max(durations)
+                    
+                    # Also record temperature range if available
+                    if idx < len(axes) and axes[idx] is not None:
+                        ylim = axes[idx].get_ylim()
+                        point_summary[f'{model_name}_temp_min'] = ylim[0]
+                        point_summary[f'{model_name}_temp_max'] = ylim[1]
                 else:
                     point_summary[f'{model_name}_avg_duration'] = 0
                     point_summary[f'{model_name}_max_duration'] = 0
@@ -3587,7 +3594,7 @@ def print_summary_table(all_summaries, models_data_mapping):
     
     subheader = " " * 33
     for model in models:
-        subheader += f"{'Events':<10} {'Avg Dur':<10} {'Max Dur':<10} "
+        subheader += f"{'Events':<8} {'AvgDur':<6} {'MaxDur':<6} {'TempMin':<8} {'TempMax':<8} "
     print(subheader)
     print("-" * 80)
     
@@ -3599,6 +3606,8 @@ def print_summary_table(all_summaries, models_data_mapping):
             events = summary.get(f'{model}_events', 'N/A')
             avg_dur = summary.get(f'{model}_avg_duration', 'N/A')
             max_dur = summary.get(f'{model}_max_duration', 'N/A')
+            temp_min = summary.get(f'{model}_temp_min', 'N/A')
+            temp_max = summary.get(f'{model}_temp_max', 'N/A')
             
             if isinstance(avg_dur, (int, float)):
                 avg_dur_str = f"{avg_dur:.1f}"
@@ -3610,7 +3619,17 @@ def print_summary_table(all_summaries, models_data_mapping):
             else:
                 max_dur_str = str(max_dur)
             
-            row += f"{events:<10} {avg_dur_str:<10} {max_dur_str:<10} "
+            if isinstance(temp_min, (int, float)):
+                temp_min_str = f"{temp_min:.1f}"
+            else:
+                temp_min_str = str(temp_min)
+                
+            if isinstance(temp_max, (int, float)):
+                temp_max_str = f"{temp_max:.1f}"
+            else:
+                temp_max_str = str(temp_max)
+            
+            row += f"{events:<8} {avg_dur_str:<6} {max_dur_str:<6} {temp_min_str:<8} {temp_max_str:<8} "
         
         print(row)
     
