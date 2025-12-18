@@ -1456,6 +1456,87 @@ def quick_regional_analysis(models_dict, bins=100, xlim=(-5, 5), regions=None,
     plot_regional_pdfs_classic(regional_pdfs, regions=regions)
     return regional_pdfs, masks_dict
 
+
+#for hadgems!!
+def simple_memory_efficient_pdfs_working(models_dict, masks_dict, xlim=(-2.5, 2.5), bins=100):
+    """
+    Working memory-efficient PDF computation 
+    Uses the same pattern as other functions in your codebase
+    """
+    import numpy as np
+    import xarray as xr
+    import dask.array as da
+    
+    print("COMPUTING REGIONAL PDFS")
+    print("=" * 70)
+    
+    # Determine regions
+    first_model = list(masks_dict.keys())[0]
+    regions = list(masks_dict[first_model].data_vars)
+    
+    print(f"Using {len(regions)} regions")
+    
+    regional_pdfs = {}
+    
+    for model_name, data in models_dict.items():
+        print(f"\nProcessing {model_name}...")
+        
+        if model_name not in masks_dict:
+            print(f"  Warning: No masks found for {model_name}, skipping")
+            continue
+        
+        model_masks = masks_dict[model_name]
+        regional_pdfs[model_name] = {}
+        
+        for region in regions:
+            if region not in model_masks:
+                continue
+            
+            print(f"  {region}...", end=' ', flush=True)
+            
+            mask = model_masks[region]
+            
+            # Apply mask (lazy operation)
+            masked_data = data.where(mask)
+            
+            try:
+                # Use the SAME approach as your global PDF functions
+                # This pattern is proven to work in your codebase
+                
+                # Count valid points
+                n_total = int(masked_data.count().compute())
+                
+                if n_total == 0:
+                    print(f"no data")
+                    continue
+                
+                # Compute histogram using dask (same as your global functions)
+                counts, bin_edges = da.histogram(masked_data.data, bins=bins, 
+                                                range=xlim, density=True)
+                counts = counts.compute()
+                bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+                
+                # Create DataArray
+                pdf_da = xr.DataArray(
+                    counts,
+                    dims=['bin_center'],
+                    coords={'bin_center': bin_centers},
+                    attrs={
+                        'region': region,
+                        'model': model_name,
+                        'n_points': n_total
+                    }
+                )
+                
+                regional_pdfs[model_name][region] = pdf_da
+                print(f"✓ ({n_total:,} pts)")
+                
+            except Exception as e:
+                print(f"✗ error: {str(e)[:50]}...")
+    
+    return regional_pdfs, masks_dict
+
+
 def quick_global_analysis(models_dict, bins=100, xlim=(-5, 5)):
     """Quick global PDF analysis"""
     pdfs = compute_global_pdfs_classic(models_dict, bins=bins, xlim=xlim)
