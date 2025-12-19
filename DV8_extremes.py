@@ -1227,131 +1227,76 @@ def quick_regional_extremes_analysis(models_dict, time_dim='time', plot_type='ba
 
 def detect_mhw_events_structured(time_series, time_coords=None, min_duration=5, max_gap=2, max_events=100):
     """
-    Detect MHW events and return structured arrays for Dask compatibility
+    MODIFIED: Open-then-Close Logic.
+    Retains event_count, durations, start_times, and end_times.
     """
-    if np.all(~time_series):  # No extreme days
-        return (
-            np.int32(0),                    # event_count
-            np.full(max_events, -1, dtype=np.int32),  # durations
-            np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]'),  # start_times
-            np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]')   # end_times
-        )
+    # Initialize empty return arrays
+    empty_ret = (np.int32(0), np.full(max_events, -1, dtype=np.int32), 
+                 np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]'), 
+                 np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]'))
+
+    if np.all(~time_series):
+        return empty_ret
     
-    # Find extreme periods
+    # --- STEP 1: OPENING (Duration Filter) ---
     labeled_periods, num_periods = ndimage.label(time_series)
+    if num_periods == 0: return empty_ret
     
-    if num_periods == 0:
-        return (
-            np.int32(0),
-            np.full(max_events, -1, dtype=np.int32),
-            np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]'),
-            np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]')
-        )
-    
-    # Get period lengths and positions
     period_lengths = ndimage.sum(time_series, labeled_periods, range(1, num_periods + 1))
     period_indices = ndimage.find_objects(labeled_periods)
-    periods = []
     
-    for i, (slc, length) in enumerate(zip(period_indices, period_lengths)):
-        if slc is not None:
-            start_idx = slc[0].start
-            end_idx = slc[0].stop - 1
-            
-            if time_coords is not None:
-                start_time = time_coords[start_idx]
-                end_time = time_coords[end_idx]
-            else:
-                start_time = np.datetime64('NaT')
-                end_time = np.datetime64('NaT')
-                
-            periods.append({
-                'start_idx': start_idx,
-                'end_idx': end_idx,
-                'start_time': start_time,
-                'end_time': end_time,
+    # Filter periods: Only keep those >= min_duration (The 'Opening' step)
+    valid_initial_periods = []
+    for slc, length in zip(period_indices, period_lengths):
+        if slc is not None and length >= min_duration:
+            valid_initial_periods.append({
+                'start': slc[0].start,
+                'end': slc[0].stop - 1,
                 'length': int(length)
             })
-    
-    # Sort and merge periods
-    if not periods:
-        return (
-            np.int32(0),
-            np.full(max_events, -1, dtype=np.int32),
-            np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]'),
-            np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]')
-        )
-    
-    periods.sort(key=lambda x: x['start_idx'])
-    
+            
+    if not valid_initial_periods:
+        return empty_ret
+
+    # --- STEP 2: CLOSING (Bridge Survivors) ---
+    # According to Hobday: [5hot, 1cool, 2hot] = 5 days because the '2' was deleted first.
     merged_events = []
-    current_event = periods[0]
-    
-    for i in range(1, len(periods)):
-        next_period = periods[i]
-        gap = next_period['start_idx'] - current_event['end_idx'] - 1
+    current_event = valid_initial_periods[0]
+
+    for i in range(1, len(valid_initial_periods)):
+        next_p = valid_initial_periods[i]
+        gap = next_p['start'] - current_event['end'] - 1
         
-        if (gap <= max_gap and 
-            current_event['length'] >= min_duration and 
-            next_period['length'] >= min_duration):
-            current_event['end_idx'] = next_period['end_idx']
-            current_event['end_time'] = next_period['end_time']
-            current_event['length'] = current_event['length'] + gap + next_period['length']
+        if gap <= max_gap:
+            # Bridge them
+            current_event['end'] = next_p['end']
+            current_event['length'] += gap + next_p['length']
         else:
-            if current_event['length'] >= min_duration:
-                merged_events.append(current_event)
-            current_event = next_period
+            # Seal current and move to next
+            merged_events.append(current_event)
+            current_event = next_p
     
-    if current_event['length'] >= min_duration:
-        merged_events.append(current_event)
-    
-    # Create fixed-size arrays
-    event_count = len(merged_events)
+    merged_events.append(current_event)
+
+    # --- STEP 3: FORMATTING (Retaining original variables) ---
+    event_count = min(len(merged_events), max_events)
     durations = np.full(max_events, -1, dtype=np.int32)
     start_times = np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]')
     end_times = np.full(max_events, np.datetime64('NaT'), dtype='datetime64[ns]')
     
-    # Fill arrays with event data
-    for i, event in enumerate(merged_events):
-        if i < max_events:  # Don't exceed array size
-            durations[i] = event['length']
-            start_times[i] = event['start_time']
-            end_times[i] = event['end_time']
-    
-    return (
-        np.int32(event_count),
-        durations,
-        start_times,
-        end_times
-    )
+    for i in range(event_count):
+        ev = merged_events[i]
+        durations[i] = ev['length']
+        if time_coords is not None:
+            start_times[i] = time_coords[ev['start']]
+            end_times[i] = time_coords[ev['end']]
+            
+    return np.int32(event_count), durations, start_times, end_times
 
 def create_mhw_event_dataset(o_ex, min_duration=5, max_gap=2, max_events_per_cell=100):
-    """
-    Create an xarray Dataset with MHW event details for each grid cell
-    
-    Parameters:
-    -----------
-    o_ex : xarray.DataArray
-        Boolean array with True where extreme events occurred
-        Shape: (time, lat, lon)
-    min_duration : int
-        Minimum duration (in days) for an event to be considered
-    max_gap : int
-        Maximum gap (in days) between events to be merged
-    max_events_per_cell : int
-        Maximum number of events to store per grid cell
-    
-    Returns:
-    --------
-    mhw_ds : xarray.Dataset
-        Dataset with MHW event details
-    """
-    print("Creating MHW event dataset...")
-    
-    # Get time coordinates
+    print("Creating MHW event dataset (Strict Hobday Logic)...")
     time_coords = o_ex.time.values
     
-    # Apply to all grid cells with output_sizes in dask_gufunc_kwargs
     results = xr.apply_ufunc(
         detect_mhw_events_structured,
         o_ex,
@@ -1369,26 +1314,17 @@ def create_mhw_event_dataset(o_ex, min_duration=5, max_gap=2, max_events_per_cel
         }
     )
     
-    # Create event index coordinate
-    event_index = np.arange(max_events_per_cell)
-    
-    # Build the dataset by extracting data from DataArrays
+    # Extract the .data property from each result to avoid the TypeError
     mhw_ds = xr.Dataset({
         'event_count': (['lat', 'lon'], results[0].data),
         'event_durations': (['lat', 'lon', 'event_index'], results[1].data),
         'event_start_times': (['lat', 'lon', 'event_index'], results[2].data),
         'event_end_times': (['lat', 'lon', 'event_index'], results[3].data)
     }, coords={
-        'lat': o_ex.lat,
-        'lon': o_ex.lon,
-        'event_index': event_index
+        'lat': o_ex.lat, 
+        'lon': o_ex.lon, 
+        'event_index': np.arange(max_events_per_cell)
     })
-    
-    # Add attributes
-    mhw_ds.event_count.attrs = {'long_name': 'Number of MHW events', 'units': 'count'}
-    mhw_ds.event_durations.attrs = {'long_name': 'Duration of MHW events', 'units': 'days'}
-    mhw_ds.event_start_times.attrs = {'long_name': 'Start time of MHW events'}
-    mhw_ds.event_end_times.attrs = {'long_name': 'End time of MHW events'}
     
     return mhw_ds
 
