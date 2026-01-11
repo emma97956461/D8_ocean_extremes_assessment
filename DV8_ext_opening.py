@@ -3238,102 +3238,250 @@ def plot_points_on_masks(masks_dict, model_name, points_of_interest=None, figsiz
     
     return fig, ax
 
-
-
-
 def plot_point_model_comparison_subplots(point, models_data_mapping, buffer_days=15, 
-                                        time_slice=None, figsize=None):
+                                        time_slice=None, figsize=(18, 5)):
+    """
+    Plot a single point for all models in subplots (side-by-side comparison)
+    FIXED: Each subplot now has its own independent y-axis for proper visualization
+    
+    Parameters:
+    -----------
+    point : dict
+        Dictionary with 'name', 'lat', 'lon'
+    models_data_mapping : dict
+        Dictionary with model names as keys and model data as values
+        Each model data should have: 'sst', 'ssta', 'thresholds', 'mhw_events'
+    buffer_days : int
+        Number of days before/after each event to include
+    time_slice : slice, optional
+        Time range to plot
+    figsize : tuple
+        Figure size
+    
+    Returns:
+    --------
+    fig : matplotlib.figure.Figure
+        The figure with subplots
+    axes : list
+        List of axes objects
+    events_data_list : list
+        List of events data for each model
+    """
+    
     models = list(models_data_mapping.keys())
     n_models = len(models)
     
-    # Max 2 models per row
-    n_cols = min(n_models, 2) 
-    n_rows = (n_models + n_cols - 1) // n_cols
+    # Create figure with subplots - DO NOT share y-axis
+    fig, axes = plt.subplots(1, n_models, figsize=figsize, sharey=False)
     
-    if figsize is None:
-        figsize = (12, 4.5 * n_rows) 
-    
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
-    axes_flat = axes.flatten() if n_models > 1 else [axes]
+    # Handle case when there's only one model
+    if n_models == 1:
+        axes = [axes]
     
     events_data_list = []
+    
+    # Plot each model in its own subplot
+    for idx, (model_name, ax) in enumerate(zip(models, axes)):
+        model_data = models_data_mapping[model_name]
+        
+        try:
+            # Create individual plot for this model
+            fig_single, events_data = plot_sst_trim_mhw_events(
+                model_data['sst'],
+                model_data['ssta'],
+                model_data['thresholds'],
+                model_data['mhw_events'],
+                lat=point['lat'],
+                lon=point['lon'],
+                time_slice=time_slice,
+                trim_to_events=True,
+                buffer_days=buffer_days
+            )
+            
+            # Get the single plot's axis
+            ax_single = fig_single.axes[0]
+            
+            # Copy all artists from single plot to subplot
+            # 1. Copy lines (SST, climatology, threshold)
+            for line in ax_single.get_lines():
+                ax.plot(line.get_xdata(), line.get_ydata(),
+                       color=line.get_color(),
+                       linestyle=line.get_linestyle(),
+                       linewidth=line.get_linewidth() * 0.8,  # Slightly thinner for subplot
+                       alpha=line.get_alpha(),
+                       label=line.get_label())
+            
+            # 2. Copy filled areas (SST > threshold)
+            for collection in ax_single.collections:
+                if hasattr(collection, 'get_facecolor'):
+                    # This is a filled area (SST > threshold)
+                    paths = collection.get_paths()
+                    for path in paths:
+                        patch = mpatches.PathPatch(path,
+                                                  facecolor=collection.get_facecolor()[0],
+                                                  alpha=collection.get_alpha() or 0.3,
+                                                  edgecolor='none')
+                        ax.add_patch(patch)
+            
+            # 3. Copy vertical spans (MHW events)
+            for patch in ax_single.patches:
+                if isinstance(patch, mpatches.Rectangle):
+                    # This is a vertical span for MHW events
+                    new_patch = mpatches.Rectangle(
+                        patch.get_xy(),
+                        patch.get_width(),
+                        patch.get_height(),
+                        facecolor=patch.get_facecolor(),
+                        alpha=patch.get_alpha() or 0.1,
+                        edgecolor='none'
+                    )
+                    ax.add_patch(new_patch)
+            
+            # 4. Copy vertical lines (event starts/ends)
+            for line in ax_single.lines:
+                if line.get_linestyle() == '--':  # Event markers
+                    ax.axvline(line.get_xdata()[0],
+                              color=line.get_color(),
+                              linestyle=line.get_linestyle(),
+                              alpha=line.get_alpha(),
+                              linewidth=line.get_linewidth())
+            
+            # 5. Copy x-axis formatting
+            ax.xaxis_date()
+            ax.xaxis.set_major_locator(ax_single.xaxis.get_major_locator())
+            ax.xaxis.set_major_formatter(ax_single.xaxis.get_major_formatter())
+            
+            # Auto-format x-axis dates
+            ax.figure.autofmt_xdate(rotation=90, ha='right')
+            
+            # Set subplot title with model name and event count
+            event_count = int(events_data.event_count.values)
+            ax.set_title(f"{model_name}\n{event_count} events", fontsize=12)
+            
+            # Add grid
+            ax.grid(True, alpha=0.3)
+            
+            # Set y-label for each subplot (not just first one)
+            ax.set_ylabel('Temperature (°C)', fontsize=11)
+            
+            # Add x-label for each subplot
+            ax.set_xlabel('Date', fontsize=10)
+            
+            # CRITICAL FIX: Set y-limits for EACH subplot independently
+            if ax_single.get_ylim():
+                ylim = ax_single.get_ylim()
+                # Add a small padding to y-axis for better visualization
+                y_padding = (ylim[1] - ylim[0]) * 0.05
+                ax.set_ylim(ylim[0] - y_padding, ylim[1] + y_padding)
+            
+            # Close the single figure to save memory
+            plt.close(fig_single)
+            
+            events_data_list.append(events_data)
+            
+            print(f"  {model_name}: {event_count} events (temp range: {ylim[0]:.1f} to {ylim[1]:.1f}°C)")
+            
+        except Exception as e:
+            # If there's an error, show error message in subplot
+            ax.text(0.5, 0.5, f"Error:\n{str(e)[:50]}...",
+                   ha='center', va='center', transform=ax.transAxes,
+                   fontsize=9, color='red', bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+            ax.set_title(f"{model_name}\nERROR", fontsize=12, color='red')
+            ax.grid(False)
+            events_data_list.append(None)
+            print(f"  {model_name}: Error - {str(e)[:50]}...")
+    
+    # Main title for the entire figure
+    fig.suptitle(f"{point['name']} (lat={point['lat']:.1f}, lon={point['lon']:.1f})",
+                fontsize=14, y=1.02)
+    
+    # Add a common legend (using handles/labels from first subplot)
+    if axes[0].get_legend_handles_labels()[0]:
+        # Get unique handles and labels across all subplots
+        all_handles = []
+        all_labels = []
+        
+        for ax in axes:
+            handles, labels = ax.get_legend_handles_labels()
+            for handle, label in zip(handles, labels):
+                if label not in all_labels:
+                    all_handles.append(handle)
+                    all_labels.append(label)
+        
+        # Add legend to the right of the figure
+        fig.legend(all_handles, all_labels,
+                  loc='upper left',
+                  bbox_to_anchor=(1.02, 0.9),
+                  fontsize=9,
+                  title='Legend',
+                  title_fontsize=10)
+    
+    plt.tight_layout()
+    
+    return fig, axes, events_data_list
+
+
+import matplotlib.dates as mdates
+
+def plot_all_points_model_comparisons(point, models_data_mapping, buffer_days=5):
+    """
+    Plots model comparisons in a 2x3 grid for better readability.
+    """
+    models = list(models_data_mapping.keys())
+    n_models = len(models)
+    
+    # Define grid: max 3 columns, calculate rows needed
+    n_cols = 3
+    n_rows = (n_models + n_cols - 1) // n_cols
+    
+    # Adjust figsize: wider for 3 columns, taller for multiple rows
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(18, 5 * n_rows), sharex=False)
+    
+    # Flatten axes for easy iteration
+    axes_flat = axes.flatten() if n_models > 1 else [axes]
     
     for idx, model_name in enumerate(models):
         ax = axes_flat[idx]
         m = models_data_mapping[model_name]
         
-        fig_tmp, events_data = plot_sst_trim_mhw_events(
+        # Call your ORIGINAL working function
+        fig_tmp, _ = plot_sst_trim_mhw_events(
             m['sst'], m['ssta'], m['thresholds'], m['mhw_events'],
-            lat=point['lat'], lon=point['lon'],
-            time_slice=time_slice, trim_to_events=True, buffer_days=buffer_days
+            lat=point['lat'], lon=point['lon'], buffer_days=buffer_days
         )
         
         if fig_tmp:
             ax_src = fig_tmp.axes[0]
             
-            # Transfer lines and shading
+            # Transfer lines (SST, Climatology, Threshold)
             for line in ax_src.get_lines():
                 ax.plot(line.get_xdata(), line.get_ydata(), 
-                        color=line.get_color(), label=line.get_label())
+                        color=line.get_color(), linestyle=line.get_linestyle(), 
+                        label=line.get_label())
             
+            # Transfer the shaded heatwave areas
             for poly in ax_src.collections:
-                for path in poly.get_paths():
-                    ax.fill(path.vertices[:, 0], path.vertices[:, 1], 
-                            color=poly.get_facecolor()[0], alpha=0.3)
-
-            # --- DYNAMIC Y-AXIS ZOOM (FIXED) ---
-            # Extract all Y values and filter out 0 and below (land masks)
-            all_y_arrays = []
-            for line in ax.get_lines():
-                y_data = np.array(line.get_ydata())
-                # Replace 0 with NaN so they are ignored by nanmin/nanmax
-                y_data[y_data <= 0] = np.nan
-                all_y_arrays.append(y_data)
+                # We re-create the fill to ensure it scales correctly to the new axis
+                ax.add_collection(poly)
             
-            if all_y_arrays:
-                combined_y = np.concatenate(all_y_arrays)
-                
-                # nanmin/nanmax will ignore the NaNs and only look at real temps
-                y_min = np.nanmin(combined_y)
-                y_max = np.nanmax(combined_y)
-                
-                # Add a very tight 2% buffer so it's zoomed in as much as possible
-                pad = (y_max - y_min) * 0.02
-                ax.set_ylim(y_min - pad, y_max + pad)
-
-            # --- DATE FORMATTING ---
-            ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
-            plt.setp(ax.get_xticklabels(), rotation=45, ha='right', fontsize=8)
-
-            ax.set_title(f"{model_name}", fontsize=12, fontweight='bold')
-            ax.set_ylabel("SST (°C)")
-            plt.close(fig_tmp) 
+            ax.set_title(f"Model: {model_name}", fontsize=14, fontweight='bold')
+            ax.legend(loc='upper right', fontsize=9)
             
-        events_data_list.append(events_data)
+            # Improve date formatting on the X-axis
+            ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+            plt.setp(ax.get_xticklabels(), rotation=30, ha='right')
+            
+            plt.close(fig_tmp) # Close temporary figure to save memory
 
+    # Hide empty subplots if the grid isn't full (e.g., 5 models in a 6-slot grid)
     for j in range(idx + 1, len(axes_flat)):
         axes_flat[j].set_visible(False)
-        
-    plt.tight_layout()
-    return fig, axes, events_data_list
     
-
-def plot_all_points_model_comparisons(points_list, models_data_mapping, buffer_days=5):
-    """
-    Loops through your list of 18 points and creates a comparison grid for each.
-    """
-    for point in points_list:
-        print(f"Plotting {point['name']}...")
-        fig, _, _ = plot_point_model_comparison_subplots(
-            point, 
-            models_data_mapping, 
-            buffer_days=buffer_days
-        )
-        plt.show() # Or fig.savefig(...)
-    return "Complete"
-
-
+    fig.suptitle(f"MHW Comparison: {point['name']} (Lat: {point['lat']}, Lon: {point['lon']})", 
+                 fontsize=18, y=1.02)
+    
+    plt.tight_layout()
+    return fig
 
 
 def print_summary_table(all_summaries, models_data_mapping):
